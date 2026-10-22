@@ -1,0 +1,17 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  /* Gallery wall: deliberately dim so the painting dominates. */
+  background: #121010;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+canvas {
+  display: block;
+}
