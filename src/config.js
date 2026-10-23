@@ -26,21 +26,21 @@ export const rects = [
   // Black field covering most of the canvas.
   {
     color: palette.black,
-    x0: 0.06, y0: 0.08, x1: 0.94, y1: 0.92,
+    x0: 0.03, y0: 0.04, x1: 0.97, y1: 0.96,
     softness: 0.035, // edge feather width
     opacity: 0.94,
   },
   // Left maroon window.
   {
     color: palette.maroon,
-    x0: 0.17, y0: 0.2, x1: 0.33, y1: 0.8,
+    x0: 0.30, y0: 0.2, x1: 0.46, y1: 0.8,
     softness: 0.025,
     opacity: 0.9,
   },
   // Right maroon window.
   {
     color: palette.maroon,
-    x0: 0.67, y0: 0.2, x1: 0.83, y1: 0.8,
+    x0: 0.54, y0: 0.2, x1: 0.70, y1: 0.8,
     softness: 0.025,
     opacity: 0.9,
   },
