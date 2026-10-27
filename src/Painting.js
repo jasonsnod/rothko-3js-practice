@@ -5,7 +5,9 @@ import fragmentShader from './shaders/painting.frag.glsl?raw';
 const MAX_LAYERS = 6;
 const MAX_SHAPES = 12;
 
-export const DEBUG_VIEWS = { final: 0, thickness: 1, coverage: 2 };
+export const DEBUG_VIEWS = { final: 0, thickness: 1, coverage: 2, strokes: 3 };
+
+const DEG = Math.PI / 180;
 
 // A flat canvas whose surface is painted entirely in a fragment shader.
 // Its local size is aspect x 1, so the camera can fit it by height.
@@ -42,6 +44,8 @@ export class Painting {
         uLayerPigment: { value: vec4s(MAX_LAYERS) },
         uLayerThickness: { value: vec4s(MAX_LAYERS) },
         uLayerEdge: { value: vec4s(MAX_LAYERS) },
+        uLayerStrokes: { value: vec4s(MAX_LAYERS) },
+        uLayerStreaks: { value: vec4s(MAX_LAYERS) },
         uLayerShapes: { value: vec4s(MAX_LAYERS) },
         uShapes: { value: vec4s(MAX_SHAPES) },
         uDebugView: { value: DEBUG_VIEWS.final },
@@ -74,11 +78,18 @@ export class Painting {
     // range it owns.
     let shapeIndex = 0;
     layers.forEach((layer, i) => {
-      const { pigment, thickness, edge } = layer;
+      const { pigment, thickness, strokes, edge } = layer;
       u.uLayerColor.value[i].set(pigment.color);
       u.uLayerPigment.value[i].set(pigment.hiding, pigment.glaze, 0, 0);
       u.uLayerThickness.value[i].set(thickness.base, thickness.variation, thickness.scale, 0);
-      u.uLayerEdge.value[i].set(edge.width, edge.breath, 0, 0);
+      u.uLayerEdge.value[i].set(edge.width, edge.breath, edge.warp, edge.breakup);
+      u.uLayerStrokes.value[i].set(
+        Math.max(strokes.size, 0.01), strokes.angle * DEG, strokes.spread * DEG, strokes.interior,
+      );
+      // Streak length/width become noise frequencies along/across the stroke.
+      u.uLayerStreaks.value[i].set(
+        1 / Math.max(strokes.length, 0.01), 1 / Math.max(strokes.width, 0.001), 0, 0,
+      );
       u.uLayerShapes.value[i].set(shapeIndex, layer.shapes.length, i + 1, 0);
 
       for (const s of layer.shapes) {

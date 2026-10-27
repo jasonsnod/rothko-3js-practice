@@ -269,7 +269,9 @@ and layers are stored separately:
 | `uLayerColor[i]` (`vec3`) | linear RGB | `THREE.Color` converts it automatically (§7.6). |
 | `uLayerPigment[i]` (`vec4`) | hiding, glaze | Paint properties (§7.4). |
 | `uLayerThickness[i]` (`vec4`) | base, variation, scale | How the paint was applied (§7.4). |
-| `uLayerEdge[i]` (`vec4`) | width, breath | Border shape and motion (§7.5). |
+| `uLayerEdge[i]` (`vec4`) | width, breath, warp, breakup | Border shape and motion (§7.5). |
+| `uLayerStrokes[i]` (`vec4`) | patch size, angle, spread, interior | Brush stroke layout (§7.7). Angles are converted to radians in JS. |
+| `uLayerStreaks[i]` (`vec4`) | 1 / length, 1 / width | Streak size, converted to noise frequencies in JS so the shader multiplies instead of divides. |
 
 Grouping scalars into `vec4`s keeps the number of separate uniforms down and
 leaves spare slots for later phases. Indices are stored as floats and rounded
@@ -305,8 +307,11 @@ The shader runs in this order for every pixel:
 
 1. Start with the color of bare canvas.
 2. For each layer, bottom to top (ground, black, maroon):
-   1. Measure distance to the layer's shapes, shifted by the breathing noise.
-   2. Turn that into a **thickness** of paint at this pixel.
+   1. Compute the layer's **brush stroke field** (§7.7).
+   2. Measure distance to the layer's shapes from a **warped** position,
+      shifted by the breathing noise.
+   3. Turn that into a **thickness** of paint at this pixel. Across the border,
+      the strokes decide where paint survives (dry-brush breakup).
    3. Composite the layer's paint over the color so far using the **glaze
       model**: thin paint tints what's beneath; thick paint hides it.
 3. Apply canvas grain.
@@ -355,8 +360,8 @@ makes everything else possible:
 
 The exact box distance has a crease along each corner's diagonal, where the
 nearest edge switches from horizontal to vertical. Through a wide soft edge,
-that shows faintly as a mitred corner, most visibly in the thickness debug
-view. Domain warping (PLAN.md, Phase 2) will break these up.
+that showed faintly as a mitred corner. Domain warping (§7.5) now breaks these
+up.
 
 ### 7.3 Noise: value noise and fBm
 
@@ -396,14 +401,21 @@ depends on **how much paint is at each point**, so every layer computes a
 thickness value per pixel:
 
 ```glsl
-float thickness = base × extent × (1 + variation × patches);
+float thickness = base × extent
+  × (1 + variation × patches)
+  × (1 + interior × (strokes × 2 − 1));
 ```
 
-- `extent` is the soft shape mask from §7.2: 1 inside, falling to 0 across the
-  border.
+- `extent` is the shape mask: 1 inside, falling to 0 across the border, with
+  the border broken up by brush strokes (§7.5).
 - `patches` is low-frequency fBm in the range −1 to 1, with a per-layer seed.
   It models paint applied unevenly. It has **no time input**: paint that has
   been laid down doesn't move. `thickness.scale` sets the patch size.
+- `strokes` is the brush stroke field (§7.7), 0 to 1. `strokes.interior`
+  sets how much streaks of thicker and thinner paint show inside the shape.
+
+Each variation factor is clamped at zero, so a large `variation` can't
+produce negative paint.
 
 **Options considered for combining layers:**
 
@@ -454,15 +466,33 @@ and for the fading planned in Phase 4.
 
 ### 7.5 Borders and surface
 
-| Effect | Implementation | Config key |
+A border is built in four steps, each with its own config key:
+
+| Step | Implementation | Config key |
 | --- | --- | --- |
-| **Breathing borders** | fBm sampled at a higher spatial frequency (`p * 6.0`), with time as the third axis, is added to the distance before `smoothstep`. Borders grow and recede minutely around their rest position. This is now the painting's only ongoing motion. | `edge.breath` per layer |
-| **Canvas grain** | A fixed per-texel hash (no time input) multiplies the final color. | `surface.grain` |
+| **1. Warp** | Distance is measured from `p + warp × noise(p)` instead of `p`, using two channels of 2D fBm as an offset vector. This is [domain warping](https://iquilezles.org/articles/warp/): it bends the straight outline into an irregular, hand-drawn one at large scale. Static. | `edge.warp` |
+| **2. Breathe** | 3D fBm at a fine spatial frequency (`p * 12.0`), with time as the third axis, is added to the distance. Borders grow and recede minutely around their rest position. This is the painting's only ongoing motion. | `edge.breath` |
+| **3. Band** | The distance becomes a position across the border band, `u = d / width`: −1 at the inner side, +1 at the outer. | `edge.width` |
+| **4. Break up** | Two falloffs are blended. **Smooth**: `1 − smoothstep(−1, 1, u)`, the plain soft edge. **Dry-brush**: paint survives only where `strokes > bar`, where the bar rises from below 0 at the inner side to above 1 at the outer side. Strong strokes reach furthest out, so the border breaks into fingers that follow the brushwork. | `edge.breakup` |
+
+**Why the breathing works per stroke:** the stroke field is static, but the
+breathing noise shifts `u`, which moves the bar. As the bar falls, a given
+stroke's finger reaches further; as it rises, the finger pulls back. The
+strokes themselves never move, only how far each one reaches. The breathing
+frequency was raised from 6 to 12 so that neighbouring fingers breathe
+independently rather than as one wave.
+
+**Why the dry-brush transition is wide** (`smoothstep(bar − 0.25, bar + 0.25, strokes)`):
+a narrow transition turned each finger into a hard, tapered splinter, which
+read as fur or grass. Rothko's edges are ragged but feathered.
 
 The first version also slowly moved each rectangle's position and size. That
 was removed: the shifting should come from the borders of the paint changing,
 not from the shapes travelling. Breathing noise averages to zero, so borders
 always return toward where they started.
+
+**Canvas grain** (`surface.grain`) is a fixed per-texel hash (no time input)
+that multiplies the final color.
 
 **Grain is anchored to the painting**, not the screen. It's sampled from
 `floor(vUv * 2048)` rather than `gl_FragCoord`, so it scales with the painting
@@ -497,6 +527,64 @@ ever pushing a channel negative.
 Debug views output their raw grayscale values and return **before**
 `colorspace_fragment`, so a thickness of 1 (shown as 0.5) really is mid-grey
 on screen rather than being brightened by the sRGB conversion.
+
+### 7.7 Brush strokes
+
+The stroke field is a value from 0 to 1 at every point, and is **static**:
+strokes are anchored to the canvas. It feeds both the dry-brush borders
+(§7.5) and the interior thickness (§7.4). The `strokes` debug view shows it.
+
+**Options considered:**
+
+1. **One direction of stretched noise everywhere.** Cheap, but reads as
+   combed or brushed metal, with no crisscrossing.
+2. **Stretched noise rotated by a smoothly varying angle field.** Rotating
+   coordinates by an angle that changes across the canvas distorts distances
+   far from the rotation origin, causing fanning and pinching artifacts.
+3. **Patches with their own direction, blended together.** Each patch of
+   canvas gets its own stroke angle, measured around the patch's own center so
+   there's no distortion. Neighbouring patches are blended smoothly.
+
+**Chosen: option 3**, applied twice: a main set of strokes and a crossing set
+at about 90°. This gives loose crisscrossing.
+
+How one set is computed (`strokeSet` in the shader):
+
+- The canvas is divided into a grid of patches, `strokes.size` across.
+- Each pixel looks at its **four nearest patch centers**. For each, a hash of
+  the patch's grid position gives it an angle (`strokes.angle` ± up to
+  `strokes.spread`), a pressure, and a length jitter.
+- The pixel's position is rotated into each patch's stroke frame, and
+  **streaks** are sampled there: value noise stretched along the stroke
+  (frequency `1 / strokes.length`) and squeezed across it
+  (frequency `1 / strokes.width`). This is anisotropic noise, the standard way
+  to get streaky, directional texture from ordinary noise.
+- The four results are blended with smooth bilinear weights. Where patches
+  meet, both directions show partially, so strokes overlap rather than
+  stopping at a seam.
+- **Pressure** pulls a patch's streaks toward a neutral 0.5, so some patches
+  are faint and others are bold, like varied brush pressure.
+
+The two sets are combined with a **soft maximum**,
+`0.5 × (a + b + sqrt((a − b)² + k))`: whichever set is stronger shows, with a
+smooth blend where they're similar. The result is then contrast-stretched,
+because averaging patches and sets compresses the range toward 0.5.
+
+Two artifacts came up while tuning, with their fixes:
+
+- **"Ladder rungs" across streaks.** Value noise has a lattice; stretched
+  along the stroke, every streak changed value at the same lattice lines,
+  forming rungs across the stroke. Shearing the noise coordinates
+  (`s.x += s.y × 1.618`) offsets each lattice row along the stroke by an
+  irrational amount, so the cell boundaries no longer line up.
+- **Woven, plaid-like grids.** Where both sets were equally strong, they formed
+  tight grids that read as fabric. The crossing set now uses lighter, more
+  varied pressure (minimum 0 versus 0.35, with pressure squared to skew it
+  lighter), so it dominates only in some patches.
+
+**Cost:** per layer, the stroke field takes 2 sets × 4 patches × 2 noise
+samples, plus 6 hashes per patch. Together with warping, breathing and
+patches, that is the most expensive part of the shader. See §11.
 
 ---
 
@@ -546,14 +634,33 @@ so the two read as separate layers. The bare canvas is a pale linen color
   clearly visible in the thickness debug view.
 - `glaze: 1.0` means thin paint tints with exactly its own color.
 
+### Stroke and edge values
+
+- **Different angles per layer** (ground 20°, black 35°, maroon −25°), so one
+  layer's strokes don't line up with another's. Each layer also gets a
+  different seed automatically.
+- **Patch size** shrinks from ground (0.2) to black (0.16) to maroon (0.12),
+  since the windows are smaller areas and would otherwise contain only a few
+  patches.
+- **Streak width** of 0.014–0.02 of the canvas height, about 4–5 cm on the real
+  painting. Narrower values (first tried at 0.008–0.012) made the borders look
+  splintered.
+- **`breakup: 0.6`** keeps some of the smooth soft edge mixed in. At 1.0 the
+  borders are entirely brush-driven and get noticeably harsher.
+- **`warp`** of 0.02 (black) and 0.012 (maroon) wobbles the outlines by about
+  1–2% of the canvas height, enough to lose the ruled-line look without
+  changing the composition. The ground's warp and breakup are 0 because its
+  border is off-canvas.
+
 ### Motion values
 
 All motion values were chosen to be just at the edge of noticeable:
 
 - `speed: 0.04` means the shader's internal clock advances 1 unit about every
   25 seconds. Visible change takes tens of seconds.
-- `edge.breath: 0.012` is about half the edge width, so borders ripple but
-  stay soft. The ground's breath is 0, since its edge is off-canvas.
+- `edge.breath: 0.01–0.012` is about half the edge width, so stroke borders
+  grow and recede minutely. The ground's breath is 0, since its edge is
+  off-canvas.
 
 When tuning, use the debug panel's **preview speed ×** slider to see what the
 motion does, rather than editing `speed`.
@@ -566,8 +673,9 @@ With no reference image, tuning happens by describing what looks wrong and
 adjusting values. The panel makes that fast and gives things names to refer to.
 
 - **Opening it:** add `?debug` to the URL. Press **H** to hide or show it.
-  Add `&view=thickness&layer=black` (or `coverage`, or another layer name) to
-  start on a specific view.
+  Add `&view=thickness&layer=black` (or `coverage` or `strokes`, or another
+  layer name) to start on a specific view, and `&preview=50` to start with
+  time running 50× faster.
 - **Built with [lil-gui](https://lil-gui.georgealways.com/)**, the panel
   library used across the three.js examples. It's small, has no
   dependencies, and binds controls directly to properties of plain objects.
@@ -584,9 +692,10 @@ adjusting values. The panel makes that fast and gives things names to refer to.
 
 | Control | Purpose |
 | --- | --- |
-| View → show | `final`, `thickness` (thickness 1 = mid-grey), or `coverage` (white = fully hidden beneath). |
+| View → show | `final`, `thickness` (thickness 1 = mid-grey), `coverage` (white = fully hidden beneath), or `strokes` (the brush stroke field). |
 | View → layer | Which layer the debug views show. |
 | View → preview speed × | Multiplies the speed of time (up to 200×) without changing the config. |
+| View → fps | Frames per second, averaged over half a second. |
 | Motion, Surface, Layer folders | Every value in `config.js`, including each shape's coordinates. |
 | copy config | Copies the current values as JSON to the clipboard, and logs them to the console as a fallback. Paste back into `config.js` to keep them. |
 
@@ -607,9 +716,14 @@ adjusting values. The panel makes that fast and gives things names to refer to.
 
 The roadmap lives in [PLAN.md](PLAN.md). Beyond that:
 
-- **No brush texture yet:** fBm gives cloudy patches but not directional brush
-  strokes. That's PLAN.md Phase 2.
-- **Mitred corners:** see the note at the end of [§7.2](#72-rectangles-as-signed-distance-fields).
+- **GPU cost is unmeasured on real hardware.** Each pixel now computes a stroke
+  field, warp, breathing and patches for all three layers. Headless
+  screenshots use a software renderer, so their frame rate means nothing. If
+  the **fps** readout in the debug panel is low, pre-computing the static
+  fields into a texture (PLAN.md, Phase 5) would remove most of the cost,
+  since only the breathing changes over time.
+- **Occasional small grid patches** remain where both stroke sets cross at
+  similar strength (§7.7).
 - **No reduced-motion handling:** honoring
   [`prefers-reduced-motion`](https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion)
   by setting `speed` to 0 or near it would be a small, worthwhile addition.

@@ -40,16 +40,31 @@ export const surface = {
 //                        even, 0.5 = thickness varies by +/-50%).
 //   thickness.scale      Size of the uneven patches. Higher = smaller patches.
 //
-//   edge.width   How far the paint thins out across a shape's border.
-//   edge.breath  How far borders grow and recede over time.
+//   strokes.size      Size of each patch of same-direction strokes.
+//   strokes.angle     Main stroke direction in degrees (0 = horizontal). A
+//                     second set of strokes crosses it at about 90 degrees.
+//   strokes.spread    How far each patch's direction varies, in degrees.
+//   strokes.length    Typical length of a bristle streak.
+//   strokes.width     Typical width of a bristle streak.
+//   strokes.interior  How much the strokes vary paint thickness inside the
+//                     shape (0 = not at all).
+//
+//   edge.width    How far the paint thins out across a shape's border.
+//   edge.breath   How far stroke borders grow and recede over time.
+//   edge.warp     Large-scale irregularity of the outline.
+//   edge.breakup  0 = smooth soft border, 1 = border fully broken up by
+//                 brush strokes (dry-brush fingers and gaps).
 //
 //   shapes  One or more rectangles the layer's paint covers.
+//
+// Sizes and widths are fractions of the canvas height.
 export const layers = [
   {
     name: 'ground',
     pigment: { color: '#4a1418', hiding: 4.0, glaze: 1.0 },
     thickness: { base: 1.0, variation: 0.25, scale: 2.0 },
-    edge: { width: 0.02, breath: 0.0 },
+    strokes: { size: 0.2, angle: 20, spread: 40, length: 0.35, width: 0.02, interior: 0.15 },
+    edge: { width: 0.02, breath: 0.0, warp: 0.0, breakup: 0.0 },
     // Extends past the canvas so the ground has no visible border.
     shapes: [{ x0: -0.1, y0: -0.1, x1: 1.1, y1: 1.1 }],
   },
@@ -57,14 +72,16 @@ export const layers = [
     name: 'black',
     pigment: { color: '#120a0b', hiding: 2.4, glaze: 1.0 },
     thickness: { base: 1.0, variation: 0.35, scale: 2.5 },
-    edge: { width: 0.035, breath: 0.012 },
+    strokes: { size: 0.16, angle: 35, spread: 35, length: 0.3, width: 0.018, interior: 0.25 },
+    edge: { width: 0.035, breath: 0.012, warp: 0.02, breakup: 0.6 },
     shapes: [{ x0: 0.03, y0: 0.04, x1: 0.97, y1: 0.96 }],
   },
   {
     name: 'maroon',
     pigment: { color: '#5a1a1f', hiding: 2.4, glaze: 1.0 },
     thickness: { base: 1.0, variation: 0.35, scale: 3.0 },
-    edge: { width: 0.025, breath: 0.012 },
+    strokes: { size: 0.12, angle: -25, spread: 35, length: 0.25, width: 0.014, interior: 0.25 },
+    edge: { width: 0.025, breath: 0.01, warp: 0.012, breakup: 0.6 },
     shapes: [
       { x0: 0.30, y0: 0.2, x1: 0.46, y1: 0.8 }, // left window
       { x0: 0.54, y0: 0.2, x1: 0.70, y1: 0.8 }, // right window

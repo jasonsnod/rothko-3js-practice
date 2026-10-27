@@ -72,8 +72,10 @@ the effects must be easy to isolate and to talk about by name.
 - [x] Add a **debug view** dropdown that renders a single field in grayscale:
       final color, thickness (per layer), coverage (per layer). Can also be set
       from the URL, e.g. `?debug&view=thickness&layer=black`.
-- [ ] Add debug views for the stroke field (Phase 2), border band (Phase 3),
-      and fading exposure (Phase 4), as each of those exists.
+- [x] Add a debug view for the stroke field (Phase 2).
+- [ ] Add debug views for the border band (Phase 3) and fading exposure
+      (Phase 4), as each of those exists.
+- [x] Add an **fps** readout, and a `&preview=<n>` URL option.
 - [x] Add a **"preview speed ×"** override (up to 200×), kept out of the config.
 - [ ] Add a **"fade progress"** slider: added in Phase 4.
 - [x] Add a **"copy config"** button that copies the current values as JSON, so
@@ -83,8 +85,9 @@ the effects must be easy to isolate and to talk about by name.
 
 - [ ] Keep the static fields (the ones that don't change over time) computed in
       separately callable shader functions, so they can move into a pre-computed
-      texture later (Phase 5). The thickness patches are static but still
-      inline; split them out when Phase 2 adds the stroke field.
+      texture later (Phase 5). The stroke field is its own function
+      (`strokeField`); the warp offset and thickness patches are still inline
+      in `main()` and need splitting out when Phase 5 starts.
 
 ---
 
@@ -137,30 +140,38 @@ streaky and broken at small scale, with crisscrossing strokes.
 A single direction of streaky noise would read as combed. For loose
 crisscrosses:
 
-- [ ] **Orientation field**: a low-frequency noise gives a stroke angle at every
-      point, so the stroke direction wanders across the canvas.
-- [ ] **Two overlapping stroke sets**: sample streaky noise (stretched along the
-      stroke direction) at `θ(p)` and at about `θ(p) + 90° ± jitter`. Combine
-      them with a soft max so both directions show through where they overlap.
-- [ ] Add **per-stroke variation** by jittering stroke length and pressure with
-      a separate noise, so strokes don't all look equally strong.
-- [ ] Give each layer its own seed and orientation offset, so the black strokes
-      don't line up with the maroon strokes.
+- [x] **Orientation field**: the stroke direction wanders across the canvas.
+      Built as a grid of patches, each with its own angle, blended smoothly
+      (a continuously rotating field caused distortion; see docs/README.md §7.7).
+- [x] **Two overlapping stroke sets** at about 90° apart, combined with a soft
+      max. The crossing set uses lighter pressure so the result doesn't look
+      woven.
+- [x] Add **per-stroke variation**: each patch has its own pressure and streak
+      length.
+- [x] Give each layer its own seed and angle, so the black strokes don't line
+      up with the maroon strokes.
+- [x] Fix "ladder rung" artifacts from the noise lattice (sheared coordinates).
+- [x] Strokes also vary thickness **inside** shapes (`strokes.interior`).
 
 ### Edge construction
 
-- [ ] **Domain warping** for large-scale irregularity: distort `p` with fBm
+- [x] **Domain warping** for large-scale irregularity: distort `p` with fBm
       before measuring distance to shapes
       ([Inigo Quilez: domain warping](https://iquilezles.org/articles/warp/)).
-      This works alongside the existing additive `edge.breath` noise, and also
-      breaks up the faint mitred creases at shape corners.
-- [ ] **Dry-brush breakup**: within the edge band, paint exists only where
+      This works alongside the `edge.breath` noise, and removed the mitred
+      creases at shape corners.
+- [x] **Dry-brush breakup**: within the edge band, paint exists only where
       `strokeField > threshold(d)`. The threshold rises toward the edge, so
       edges break into fingers and gaps instead of a smooth fade.
-- [ ] **Breathing stroke borders** (the indefinite motion): animate the
-      threshold slightly over time, so individual strokes at the border grow
+      `edge.breakup` blends between this and the smooth edge.
+- [x] **Breathing stroke borders** (the indefinite motion): the breathing noise
+      shifts the threshold over time, so individual strokes at the border grow
       and recede minutely around their original size. The stroke texture stays
       anchored to the canvas; only how far each stroke reaches changes.
+      Breathing frequency doubled so neighbouring strokes move independently.
+- [ ] **Tune** from feedback: spikiness, stroke size, crisscross density.
+- [ ] **Measure frame rate** on real hardware (debug panel → fps). If low,
+      bring Phase 5 forward.
 
 ---
 
@@ -237,7 +248,7 @@ low-frequency thickness variation, and exposure.
 
 1. ~~Phase 0: layered config, debug panel, debug views~~ (done)
 2. ~~Phase 1: thickness + glaze model~~ (done; tuning ongoing)
-3. Phase 2: brush-stroke edges, including breathing stroke borders
+3. ~~Phase 2: brush-stroke edges, including breathing stroke borders~~ (done; tuning ongoing)
 4. Phase 3: red border layer
 5. Phase 4: animated fading (decide `τ` and persistence first)
 6. Phase 5: pre-computed static fields, when needed
