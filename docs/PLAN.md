@@ -55,7 +55,8 @@ Phase 1 put this in place: every layer now computes a thickness per pixel.
   - `edge`: border width and breath
   - seed: assigned automatically from the layer's position
 - [x] Layers in place: **ground**, **black**, **maroon** (two windows).
-- [ ] **Red underlayer** (the border band): added in Phase 3.
+- [x] **Red underlayers** (the border bands): added in Phase 3 as `red-outer`
+      and `red-windows`.
 - [x] The shader works out a pixel's thickness for each layer from the
       **union** of that layer's shapes (the nearest shape wins).
 - [x] Added a bare **canvas** color beneath all layers, which shows through
@@ -73,8 +74,10 @@ the effects must be easy to isolate and to talk about by name.
       final color, thickness (per layer), coverage (per layer). Can also be set
       from the URL, e.g. `?debug&view=thickness&layer=black`.
 - [x] Add a debug view for the stroke field (Phase 2).
-- [ ] Add debug views for the border band (Phase 3) and fading exposure
-      (Phase 4), as each of those exists.
+- [x] Border band debug view: not needed as a separate view. Band layers are
+      ordinary layers, so the existing thickness and coverage views show them
+      (`&layer=red-outer`).
+- [ ] Add a debug view for fading exposure (Phase 4).
 - [x] Add an **fps** readout, and a `&preview=<n>` URL option.
 - [x] Add a **"preview speed ×"** override (up to 200×), kept out of the config.
 - [ ] Add a **"fade progress"** slider: added in Phase 4.
@@ -180,16 +183,26 @@ crisscrosses:
 Goal: a warmer red shows up unevenly along the borders between shapes, as
 though an extra red layer was applied there.
 
-- [ ] Red underlayer thickness = **band function** of distance to the shapes it
-      outlines (Gaussian or smoothstep band), multiplied by **patchiness** noise
-      so it's present in some stretches and almost absent in others.
-- [ ] Settings per band: `width`, `offset` (positive extends outside the shape
-      to form a visible halo), `color`, `patchiness`, `seed`.
-- [ ] The band sits **below the black layer**. It shows as a halo where it
-      extends past the black, and shows through where the black is thin
-      (from Phase 1).
-- [ ] The band edges use the same stroke field as Phase 2, so the red follows
-      the brushwork.
+- [x] Red underlayer thickness = **Gaussian band** around the border of the
+      layer it outlines, multiplied by **patchiness** noise so it's present in
+      some stretches and almost absent in others.
+- [x] Settings per band: `outlines`, `width`, `offset` (positive extends
+      outside the shape to form a visible halo), `patchiness`, `patchScale`,
+      `breakup`. Color comes from the layer's pigment; the seed from its name.
+- [x] Bands follow the outlined layer's **actual** border, including its warp
+      and breathing, by reusing its border distance (computed in a first pass).
+- [x] **Two bands**: `red-outer` below the black (halo, and showing through the
+      black's thin edges) and `red-windows` between black and maroon (around
+      the windows, and through the maroon's edges). A single band below the
+      black couldn't show at the windows, where the black is at full
+      thickness.
+- [x] The band edges use the same dry-brush breakup as Phase 2, driven by each
+      band's own strokes.
+- [x] Fixed: the dry-brush cutoff let the strongest strokes leak through far
+      from borders (stray flecks). Its range now guarantees zero outside.
+- [x] Layer seeds now come from layer **names**, so adding layers doesn't
+      change existing layers' strokes.
+- [ ] **Tune** from feedback: band strength, width, and how patchy it is.
 
 ---
 
@@ -249,7 +262,7 @@ low-frequency thickness variation, and exposure.
 1. ~~Phase 0: layered config, debug panel, debug views~~ (done)
 2. ~~Phase 1: thickness + glaze model~~ (done; tuning ongoing)
 3. ~~Phase 2: brush-stroke edges, including breathing stroke borders~~ (done; tuning ongoing)
-4. Phase 3: red border layer
+4. ~~Phase 3: red border layer~~ (done; tuning ongoing)
 5. Phase 4: animated fading (decide `τ` and persistence first)
 6. Phase 5: pre-computed static fields, when needed
 

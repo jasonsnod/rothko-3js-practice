@@ -13,7 +13,9 @@ uniform vec4 uLayerThickness[MAX_LAYERS];  // x = base, y = variation, z = scale
 uniform vec4 uLayerEdge[MAX_LAYERS];       // x = width, y = breath, z = warp, w = breakup
 uniform vec4 uLayerStrokes[MAX_LAYERS];    // x = patch size, y = angle, z = spread, w = interior
 uniform vec4 uLayerStreaks[MAX_LAYERS];    // xy = streak frequency (along, across)
-uniform vec4 uLayerShapes[MAX_LAYERS];     // x = first shape, y = shape count, z = seed
+uniform vec4 uLayerShapes[MAX_LAYERS];     // x = first shape, y = shape count, z = seed,
+                                           // w = outlined layer (band layers), else -1
+uniform vec4 uLayerBand[MAX_LAYERS];       // x = width, y = offset, z = patchiness, w = patch scale
 
 uniform vec4 uShapes[MAX_SHAPES];          // xy = center, zw = half-size (normalized)
 
@@ -169,6 +171,40 @@ float layerDistance(vec2 p, vec2 scale, vec4 shapes) {
   return d;
 }
 
+// Distance to a layer's border as it actually appears: measured from a
+// warped position, and shifted over time by the breathing noise.
+float borderDistance(vec2 p, vec2 scale, vec4 shapes, vec4 edge, float t) {
+  float seed = shapes.z;
+
+  // Domain warping: measure distance from a distorted position, so outlines
+  // wander irregularly at large scale. Static.
+  vec2 warped = p;
+  if (edge.z > 0.0) {
+    vec2 q = p * 3.0 + seed * 5.1;
+    warped += edge.z * 2.0 * (vec2(fbm2(q), fbm2(q + vec2(5.2, 1.3))) - 0.5);
+  }
+
+  // Borders grow and recede around their rest position. Fine-grained, so
+  // individual strokes reach further or pull back independently. The noise
+  // evolves through time rather than scrolling, and averages to zero.
+  float breath = (fbm(vec3(p * 12.0 + seed * 11.0, t * 0.5)) - 0.5) * 2.0;
+  return layerDistance(warped, scale, shapes) + breath * edge.y;
+}
+
+// Dry-brush falloff: paint survives only where strokes clear the bar. As the
+// bar rises, only the strongest strokes reach, so the paint breaks into
+// fingers along the brushwork. A wide transition keeps the fingers feathered
+// rather than splintered.
+//
+// `amount` runs 0 (no paint) to 1 (full paint). The bar runs from -0.25 to
+// 1.25 so that, with the 0.25 transition, amount 0 and 1 give exactly 0 and 1
+// for every stroke value in [0, 1]. A narrower range let the strongest
+// strokes leak faint stray streaks far from any border.
+float brushed(float amount, float strokes) {
+  float bar = mix(1.25, -0.25, amount);
+  return smoothstep(bar - 0.25, bar + 0.25, strokes);
+}
+
 void main() {
   float t = uTime;
 
@@ -178,6 +214,16 @@ void main() {
 
   vec3 color = uCanvas;
   float debugValue = 0.0;
+
+  // First pass: border distance for every shaped layer. Band layers outline
+  // another layer's border, and may sit beneath it, so these are computed
+  // up front and shared rather than recomputed per band.
+  float borders[MAX_LAYERS];
+  for (int i = 0; i < MAX_LAYERS; i++) {
+    if (i >= uLayerCount) break;
+    vec4 shapes = uLayerShapes[i];
+    borders[i] = shapes.w < -0.5 ? borderDistance(p, scale, shapes, uLayerEdge[i], t) : 1e5;
+  }
 
   for (int i = 0; i < MAX_LAYERS; i++) {
     if (i >= uLayerCount) break;
@@ -191,31 +237,28 @@ void main() {
 
     float strokes = strokeField(p, strokeParams, uLayerStreaks[i].xy, seed);
 
-    // Domain warping: measure distance from a distorted position, so outlines
-    // wander irregularly at large scale. Static.
-    vec2 warped = p;
-    if (edge.z > 0.0) {
-      vec2 q = p * 3.0 + seed * 5.1;
-      warped += edge.z * 2.0 * (vec2(fbm2(q), fbm2(q + vec2(5.2, 1.3))) - 0.5);
+    float extent;
+    if (shapes.w < -0.5) {
+      // Shaped layer: full inside, thinning to nothing across the border.
+      // u is the position across the border band: -1 inner side, +1 outer.
+      float u = borders[i] / max(edge.x, 1e-4);
+      float smoothExtent = 1.0 - smoothstep(-1.0, 1.0, u);
+      float across = clamp(0.5 - 0.5 * u, 0.0, 1.0);
+      extent = mix(smoothExtent, brushed(across, strokes), edge.w);
+    } else {
+      // Band layer: paint concentrated along another layer's border, so it
+      // follows that border's warping and breathing exactly.
+      vec4 band = uLayerBand[i];
+      float d = borders[int(shapes.w + 0.5)];
+      float profile = exp(-pow((d - band.y) / max(band.x, 1e-4), 2.0));
+      extent = mix(profile, brushed(profile, strokes), edge.w);
+
+      // Patchiness: present along some stretches, nearly absent along others.
+      // fBm values cluster around 0.5, so a narrow window around it splits
+      // the border into roughly half present, half absent.
+      float presence = smoothstep(0.4, 0.6, fbm2(p * band.w + seed * 9.3));
+      extent *= mix(1.0, presence, band.z);
     }
-
-    // Borders grow and recede around their rest position. Fine-grained, so
-    // individual strokes reach further or pull back independently. The noise
-    // evolves through time rather than scrolling, and averages to zero.
-    float breath = (fbm(vec3(p * 12.0 + seed * 11.0, t * 0.5)) - 0.5) * 2.0;
-    float d = layerDistance(warped, scale, shapes) + breath * edge.y;
-
-    // Position across the border band: -1 at its inner side, +1 at its outer.
-    float u = d / max(edge.x, 1e-4);
-
-    // Smooth falloff (as before), and a dry-brush falloff where paint
-    // survives only where strokes are strong enough. The bar rises toward
-    // the outside, so the border breaks into fingers along the strokes.
-    float smoothExtent = 1.0 - smoothstep(-1.0, 1.0, u);
-    float bar = mix(-0.15, 1.15, clamp(u * 0.5 + 0.5, 0.0, 1.0));
-    // A wide transition keeps the fingers feathered rather than splintered.
-    float brushExtent = smoothstep(bar - 0.25, bar + 0.25, strokes);
-    float extent = mix(smoothExtent, brushExtent, edge.w);
 
     // Uneven application: broad patches plus brush streaks. Static.
     float patches = (fbm(vec3(p * thick.z + seed * 7.0, seed * 3.0)) - 0.5) * 2.0;

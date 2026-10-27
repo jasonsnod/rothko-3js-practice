@@ -76,6 +76,16 @@ export function createDebugPanel(painting, { surface, layers, motion }) {
     strokes.add(layer.strokes, 'width', 0.001, 0.05, 0.001);
     strokes.add(layer.strokes, 'interior', 0, 1, 0.01);
 
+    if (layer.band) {
+      const band = folder.addFolder(`Band (outlines ${layer.band.outlines})`);
+      band.add(layer.band, 'width', 0.002, 0.1, 0.001);
+      band.add(layer.band, 'offset', -0.05, 0.05, 0.001);
+      band.add(layer.band, 'patchiness', 0, 1, 0.01);
+      band.add(layer.band, 'patchScale', 0.5, 12, 0.1);
+      band.add(layer.band, 'breakup', 0, 1, 0.01);
+      continue;
+    }
+
     const edge = folder.addFolder('Edge');
     edge.add(layer.edge, 'width', 0, 0.1, 0.001);
     edge.add(layer.edge, 'breath', 0, 0.05, 0.001);

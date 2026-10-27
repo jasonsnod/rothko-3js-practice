@@ -265,7 +265,8 @@ and layers are stored separately:
 | Uniform | Contents | Why packed this way |
 | --- | --- | --- |
 | `uShapes[j]` (`vec4`) | center.xy, half-size.xy | All shapes from all layers in one flat array. This is exactly what the box distance function needs (§7.2). |
-| `uLayerShapes[i]` (`vec4`) | first shape index, shape count, seed | Which slice of `uShapes` the layer owns. |
+| `uLayerShapes[i]` (`vec4`) | first shape index, shape count, seed, outlined layer | Which slice of `uShapes` the layer owns. For a band layer, `w` is the index of the layer it outlines; otherwise −1. |
+| `uLayerBand[i]` (`vec4`) | width, offset, patchiness, patch scale | Band layers only (§7.8). |
 | `uLayerColor[i]` (`vec3`) | linear RGB | `THREE.Color` converts it automatically (§7.6). |
 | `uLayerPigment[i]` (`vec4`) | hiding, glaze | Paint properties (§7.4). |
 | `uLayerThickness[i]` (`vec4`) | base, variation, scale | How the paint was applied (§7.4). |
@@ -282,9 +283,14 @@ The config is written as edges (`x0, y0, x1, y1`) because that's easiest to
 read and adjust. The shader wants center plus half-size. That conversion
 happens in JS, so the shader does no extra work per pixel.
 
-The **seed** is just `i + 1`, a distinct number for each layer. It offsets the
-noise so layers don't share the same patches or breathe in lockstep. Starting
-from 1 is arbitrary.
+The **seed** is a number from 1 to 100 derived from the layer's **name** with
+an [FNV-1a hash](https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function).
+It offsets the noise so layers don't share the same patches or breathe in
+lockstep. The first version used the layer's position (`i + 1`). That meant
+inserting the two red band layers would have silently changed the strokes of
+every layer above them. Seeding by name keeps each layer's pattern stable
+when layers are added or reordered. The trade-off is that renaming a layer
+changes its pattern.
 
 ### 6.4 Time accumulates per frame
 
@@ -306,18 +312,23 @@ the config, so "copy config" can never save a sped-up value by accident.
 The shader runs in this order for every pixel:
 
 1. Start with the color of bare canvas.
-2. For each layer, bottom to top (ground, black, maroon):
+2. **First pass:** for every shaped layer, measure the distance to its border
+   from a **warped** position, shifted by the breathing noise. Store these in
+   a small array.
+3. **Second pass**, for each layer bottom to top (ground, red-outer, black,
+   red-windows, maroon):
    1. Compute the layer's **brush stroke field** (§7.7).
-   2. Measure distance to the layer's shapes from a **warped** position,
-      shifted by the breathing noise.
-   3. Turn that into a **thickness** of paint at this pixel. Across the border,
-      the strokes decide where paint survives (dry-brush breakup).
+   2. Work out how much of the layer is present at this pixel: inside its
+      shapes for a shaped layer, or along another layer's border for a band
+      layer (§7.8). Across borders, the strokes decide where paint survives
+      (dry-brush breakup).
+   3. Turn that into a **thickness** of paint.
    3. Composite the layer's paint over the color so far using the **glaze
       model**: thin paint tints what's beneath; thick paint hides it.
-3. Apply canvas grain.
-4. Convert to the output color space.
+4. Apply canvas grain.
+5. Convert to the output color space.
 
-If a debug view is selected, step 2 also records the chosen layer's thickness
+If a debug view is selected, step 3 also records the chosen layer's thickness
 or coverage, and that value is shown in grayscale instead of the color.
 
 ### 7.1 Aspect-corrected coordinates
@@ -473,7 +484,7 @@ A border is built in four steps, each with its own config key:
 | **1. Warp** | Distance is measured from `p + warp × noise(p)` instead of `p`, using two channels of 2D fBm as an offset vector. This is [domain warping](https://iquilezles.org/articles/warp/): it bends the straight outline into an irregular, hand-drawn one at large scale. Static. | `edge.warp` |
 | **2. Breathe** | 3D fBm at a fine spatial frequency (`p * 12.0`), with time as the third axis, is added to the distance. Borders grow and recede minutely around their rest position. This is the painting's only ongoing motion. | `edge.breath` |
 | **3. Band** | The distance becomes a position across the border band, `u = d / width`: −1 at the inner side, +1 at the outer. | `edge.width` |
-| **4. Break up** | Two falloffs are blended. **Smooth**: `1 − smoothstep(−1, 1, u)`, the plain soft edge. **Dry-brush**: paint survives only where `strokes > bar`, where the bar rises from below 0 at the inner side to above 1 at the outer side. Strong strokes reach furthest out, so the border breaks into fingers that follow the brushwork. | `edge.breakup` |
+| **4. Break up** | Two falloffs are blended. **Smooth**: `1 − smoothstep(−1, 1, u)`, the plain soft edge. **Dry-brush**: paint survives only where `strokes > bar`, where the bar rises from −0.25 at the inner side to 1.25 at the outer side. Strong strokes reach furthest out, so the border breaks into fingers that follow the brushwork. | `edge.breakup` |
 
 **Why the breathing works per stroke:** the stroke field is static, but the
 breathing noise shifts `u`, which moves the bar. As the bar falls, a given
@@ -485,6 +496,14 @@ independently rather than as one wave.
 **Why the dry-brush transition is wide** (`smoothstep(bar − 0.25, bar + 0.25, strokes)`):
 a narrow transition turned each finger into a hard, tapered splinter, which
 read as fur or grass. Rothko's edges are ragged but feathered.
+
+**Why the bar runs from −0.25 to 1.25:** with a ±0.25 transition, those limits
+guarantee exactly no paint outside the band and full paint inside it, for any
+stroke value from 0 to 1. The Phase 2 version used −0.15 to 1.15, which let
+the very strongest strokes leak through everywhere as faint stray streaks,
+far from any border. That was visible as stray red flecks on the black field.
+The shader's `brushed()` function holds this logic, shared by shaped and
+band layers.
 
 The first version also slowly moved each rectangle's position and size. That
 was removed: the shifting should come from the borders of the paint changing,
@@ -586,6 +605,62 @@ Two artifacts came up while tuning, with their fixes:
 samples, plus 6 hashes per patch. Together with warping, breathing and
 patches, that is the most expensive part of the shader. See §11.
 
+### 7.8 Band layers: the red along borders
+
+In the original, a warmer red shows unevenly along the borders between
+shapes, as if an extra layer of red was painted there. Band layers model
+that paint.
+
+**Options considered:**
+
+1. **Tint the existing borders red** inside the black and maroon layers. This
+   is simple, but the red would be part of those layers' paint rather than a
+   layer of its own. It couldn't sit *beneath* the black and show through it.
+2. **Ordinary shaped layers** with their own rectangles traced around the
+   borders. Their outlines wouldn't follow the black's warping and breathing,
+   and the coordinates would have to be kept in sync by hand.
+3. **Band layers that name the layer they outline**, reusing that layer's
+   actual border distance.
+
+**Chosen: option 3.** A band layer has `band.outlines` instead of shapes. Its
+paint follows the outlined border exactly, including the warping and the
+breathing, and moving the black field automatically moves its red border too.
+
+How the band's paint is placed:
+
+- **Profile:** a Gaussian across the border,
+  `exp(−((d − offset) / width)²)`, where `d` is the outlined layer's border
+  distance. It peaks on the border (or `offset` outside it) and fades smoothly
+  both ways.
+- **Breakup:** the same dry-brush function as shaped borders, driven by the
+  band's own stroke field, so the red's edges follow brushwork too.
+- **Patchiness:** low-frequency noise splits the border into stretches where
+  the red is present and stretches where it's almost absent. The window is
+  narrow (`smoothstep(0.4, 0.6, …)`) because fBm values cluster around 0.5; a
+  wider window left the "absent" stretches at about 40% strength.
+
+**Two bands, at two depths.** Where a layer sits in the stack decides how its
+red shows:
+
+| Band | Outlines | Position | How it shows |
+| --- | --- | --- | --- |
+| `red-outer` | `black` | Under the black | As a halo past the black's edge, and through the black's thin, broken edge fingers. |
+| `red-windows` | `maroon` | Between black and maroon | Over the black around the windows, and through the maroon's ragged edges. |
+
+A band beneath the windows' border but under the black, like `red-outer`,
+wouldn't show at all: the black there is at full thickness. That's why the
+window band sits above the black.
+
+**Why border distances are computed in a first pass:** `red-outer` sits
+*below* the black, so when the shader reaches it, the black's border hasn't
+been computed yet. Computing every shaped layer's border distance up front,
+into a local array, lets any band read any layer's border, in any order, and
+avoids computing the expensive warp and breathing noise twice. Indexing that
+array with a value only known at runtime is allowed in GLSL ES 3.00, which
+three.js uses for WebGL 2 (see the arrays section of the
+[GLSL ES 3.00 spec](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)).
+GLSL ES 1.00, used by WebGL 1, didn't allow this.
+
 ---
 
 ## 8. Configuration ([`src/config.js`](../src/config.js))
@@ -599,8 +674,13 @@ each value. The comment block above `layers` explains every per-layer setting.
 | Layer | Shapes | Notes |
 | --- | --- | --- |
 | `ground` | One rectangle extending past the canvas on all sides | Extending past the edges means its border is never visible. Its high `hiding` (4.0) makes it almost fully opaque over the bare canvas. |
+| `red-outer` | Band along `black`'s border | §7.8. |
 | `black` | The large field, 3% from the left/right edges and 4% from top/bottom | |
+| `red-windows` | Band along `maroon`'s border | §7.8. |
 | `maroon` | The two windows, 0.16 wide with a 0.08 gap between them | Both windows share one set of paint settings. |
+
+Layer names use hyphens rather than spaces so they can go in the debug URL
+(`&layer=red-outer`).
 
 **Options considered for how layers own shapes:** one layer per rectangle
 (as the first version effectively did), or layers owning lists of shapes.
@@ -652,6 +732,17 @@ so the two read as separate layers. The bare canvas is a pale linen color
   changing the composition. The ground's warp and breakup are 0 because its
   border is off-canvas.
 
+### Red band values
+
+- **Color `#8a1f1d`**: warmer and brighter than the maroon, so it reads as a
+  distinct red rather than more of the same paint.
+- **`hiding`** of 1.4 (outer) and 1.0 (windows) makes the bands
+  semi-translucent, so they tint what's beneath rather than covering it. The
+  window band is lower because, over the black, it read as a neon outline.
+- **`patchiness: 0.85`**: present along roughly half of each border.
+- **Band widths** of 0.03 (outer) and 0.02 (windows), matching the scale of
+  each border's own edge width.
+
 ### Motion values
 
 All motion values were chosen to be just at the edge of noticeable:
@@ -696,7 +787,7 @@ adjusting values. The panel makes that fast and gives things names to refer to.
 | View → layer | Which layer the debug views show. |
 | View → preview speed × | Multiplies the speed of time (up to 200×) without changing the config. |
 | View → fps | Frames per second, averaged over half a second. |
-| Motion, Surface, Layer folders | Every value in `config.js`, including each shape's coordinates. |
+| Motion, Surface, Layer folders | Every value in `config.js`, including each shape's coordinates. Band layers show a **Band** folder in place of Edge and Shapes. |
 | copy config | Copies the current values as JSON to the clipboard, and logs them to the console as a fallback. Paste back into `config.js` to keep them. |
 
 ---
@@ -717,7 +808,8 @@ adjusting values. The panel makes that fast and gives things names to refer to.
 The roadmap lives in [PLAN.md](PLAN.md). Beyond that:
 
 - **GPU cost is unmeasured on real hardware.** Each pixel now computes a stroke
-  field, warp, breathing and patches for all three layers. Headless
+  field and patches for all five layers, plus warp and breathing for the
+  three shaped ones. Headless
   screenshots use a software renderer, so their frame rate means nothing. If
   the **fps** readout in the debug panel is low, pre-computing the static
   fields into a texture (PLAN.md, Phase 5) would remove most of the cost,
