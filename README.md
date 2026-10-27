@@ -11,6 +11,9 @@ npm run build    # production build to dist/
 npm run preview  # serve the production build
 ```
 
+Add `?debug` to the URL (e.g. `http://localhost:5173/?debug`) to open the live
+tuning panel. Press **H** to hide it.
+
 Requires Node 18, 20 or 22+. (Vite is pinned to v6 because Vite 7+ needs Node 20.19+/22.12+.)
 
 ## How it works

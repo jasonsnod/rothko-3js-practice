@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { painting, palette, rects, motion } from './config.js';
+import * as config from './config.js';
 import { Painting } from './Painting.js';
 
+const { painting } = config;
 const container = document.getElementById('app');
 
 const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -15,8 +16,14 @@ const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
 camera.position.z = 1;
 
-const canvas = new Painting({ painting, palette, rects, motion });
+const canvas = new Painting(config);
 scene.add(canvas.mesh);
+
+// The tuning panel is only loaded on request, keeping it out of the
+// exhibition build's startup path.
+if (new URLSearchParams(window.location.search).has('debug')) {
+  import('./debug.js').then(({ createDebugPanel }) => createDebugPanel(canvas, config));
+}
 
 // Letterbox the painting inside the viewport, leaving a margin of "wall".
 function resize() {
@@ -43,6 +50,6 @@ timer.connect(document);
 
 renderer.setAnimationLoop((timestamp) => {
   timer.update(timestamp);
-  canvas.update(timer.getElapsed());
+  canvas.update(timer.getDelta());
   renderer.render(scene, camera);
 });

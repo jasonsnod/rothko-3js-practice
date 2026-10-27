@@ -1,11 +1,14 @@
-// Composition and motion settings for the painting.
+// Composition, paint and motion settings for the painting.
 //
 // Coordinates are normalized to the canvas: (0, 0) is bottom-left, (1, 1) is
-// top-right. Rectangles are painted in order, so later entries sit on top.
+// top-right. Layers are painted bottom to top, so later entries sit on top.
 //
 // The layout is a first-pass approximation of Black on Maroon (1958, Tate
 // T01163): a black field over a maroon ground, opened by two tall maroon
-// "windows". Tune these against a reference image.
+// "windows".
+//
+// Every value here can be tuned live in the debug panel (open the page with
+// ?debug in the URL), then copied back with the panel's "copy config" button.
 
 export const painting = {
   // Physical size in cm (height x width) -- only the aspect ratio matters.
@@ -16,45 +19,60 @@ export const painting = {
   viewportFill: 0.86,
 };
 
-export const palette = {
-  ground: '#4a1418',
-  black: '#120a0b',
-  maroon: '#5a1a1f',
+export const surface = {
+  // Bare canvas beneath all paint. Shows only where paint is very thin.
+  canvas: '#c9b99a',
+  // Fine static canvas grain.
+  grain: 0.025,
 };
 
-export const rects = [
-  // Black field covering most of the canvas.
+// Each layer's paint is described by:
+//
+//   pigment.color   Color of the paint where it is thick enough to hide
+//                   everything beneath it.
+//   pigment.hiding  How quickly paint becomes opaque as it thickens.
+//                   Higher = covers more at the same thickness.
+//   pigment.glaze   How strongly thin paint tints the layers beneath it.
+//                   0 = no tint, 1 = full tint of its own color.
+//
+//   thickness.base       Paint thickness inside the shape (1 = normal).
+//   thickness.variation  How unevenly the paint was applied (0 = perfectly
+//                        even, 0.5 = thickness varies by +/-50%).
+//   thickness.scale      Size of the uneven patches. Higher = smaller patches.
+//
+//   edge.width   How far the paint thins out across a shape's border.
+//   edge.breath  How far borders grow and recede over time.
+//
+//   shapes  One or more rectangles the layer's paint covers.
+export const layers = [
   {
-    color: palette.black,
-    x0: 0.03, y0: 0.04, x1: 0.97, y1: 0.96,
-    softness: 0.035, // edge feather width
-    opacity: 0.94,
+    name: 'ground',
+    pigment: { color: '#4a1418', hiding: 4.0, glaze: 1.0 },
+    thickness: { base: 1.0, variation: 0.25, scale: 2.0 },
+    edge: { width: 0.02, breath: 0.0 },
+    // Extends past the canvas so the ground has no visible border.
+    shapes: [{ x0: -0.1, y0: -0.1, x1: 1.1, y1: 1.1 }],
   },
-  // Left maroon window.
   {
-    color: palette.maroon,
-    x0: 0.30, y0: 0.2, x1: 0.46, y1: 0.8,
-    softness: 0.025,
-    opacity: 0.9,
+    name: 'black',
+    pigment: { color: '#120a0b', hiding: 2.4, glaze: 1.0 },
+    thickness: { base: 1.0, variation: 0.35, scale: 2.5 },
+    edge: { width: 0.035, breath: 0.012 },
+    shapes: [{ x0: 0.03, y0: 0.04, x1: 0.97, y1: 0.96 }],
   },
-  // Right maroon window.
   {
-    color: palette.maroon,
-    x0: 0.54, y0: 0.2, x1: 0.70, y1: 0.8,
-    softness: 0.025,
-    opacity: 0.9,
+    name: 'maroon',
+    pigment: { color: '#5a1a1f', hiding: 2.4, glaze: 1.0 },
+    thickness: { base: 1.0, variation: 0.35, scale: 3.0 },
+    edge: { width: 0.025, breath: 0.012 },
+    shapes: [
+      { x0: 0.30, y0: 0.2, x1: 0.46, y1: 0.8 }, // left window
+      { x0: 0.54, y0: 0.2, x1: 0.70, y1: 0.8 }, // right window
+    ],
   },
 ];
 
 export const motion = {
   // Global time scale. Keep this small: the shifting should be felt, not seen.
   speed: 0.04,
-  // How far (in canvas units) rectangle edges wander.
-  drift: 0.006,
-  // Strength of the noise that roughens and breathes along edges.
-  edgeNoise: 0.012,
-  // Mottling of color within each field (layered-wash look).
-  washNoise: 0.06,
-  // Fine static canvas grain.
-  grain: 0.025,
 };

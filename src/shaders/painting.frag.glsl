@@ -1,19 +1,22 @@
-// MAX_RECTS is injected as a define by Painting.js.
+// MAX_LAYERS and MAX_SHAPES are injected as defines by Painting.js.
 
 uniform float uTime;
 uniform float uAspect; // canvas width / height
 
-uniform vec3 uGround;
-
-uniform int uRectCount;
-uniform vec4 uRects[MAX_RECTS];       // xy = center, zw = half-size (normalized)
-uniform vec3 uRectColors[MAX_RECTS];  // linear RGB
-uniform vec4 uRectParams[MAX_RECTS];  // x = softness, y = opacity, z = seed
-
-uniform float uDrift;
-uniform float uEdgeNoise;
-uniform float uWashNoise;
+uniform vec3 uCanvas;  // bare canvas color, linear RGB
 uniform float uGrain;
+
+uniform int uLayerCount;
+uniform vec3 uLayerColor[MAX_LAYERS];      // pigment body color, linear RGB
+uniform vec4 uLayerPigment[MAX_LAYERS];    // x = hiding, y = glaze
+uniform vec4 uLayerThickness[MAX_LAYERS];  // x = base, y = variation, z = scale
+uniform vec4 uLayerEdge[MAX_LAYERS];       // x = width, y = breath
+uniform vec4 uLayerShapes[MAX_LAYERS];     // x = first shape, y = shape count, z = seed
+
+uniform vec4 uShapes[MAX_SHAPES];          // xy = center, zw = half-size (normalized)
+
+uniform int uDebugView;   // 0 = final color, 1 = thickness, 2 = coverage
+uniform int uDebugLayer;
 
 varying vec2 vUv;
 
@@ -58,46 +61,69 @@ float sdBox(vec2 p, vec2 center, vec2 halfSize) {
   return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
 }
 
+// Distance to the union of a layer's shapes (nearest shape wins).
+float layerDistance(vec2 p, vec2 scale, vec4 shapes) {
+  int first = int(shapes.x + 0.5);
+  int count = int(shapes.y + 0.5);
+  float d = 1e5;
+  for (int j = 0; j < MAX_SHAPES; j++) {
+    if (j < first) continue;
+    if (j >= first + count) break;
+    vec4 s = uShapes[j];
+    d = min(d, sdBox(p, s.xy * scale, s.zw * scale));
+  }
+  return d;
+}
+
 void main() {
   float t = uTime;
 
-  // Work in aspect-corrected space so softness and noise are isotropic.
+  // Work in aspect-corrected space so widths and noise are isotropic.
   vec2 scale = vec2(uAspect, 1.0);
   vec2 p = vUv * scale;
 
-  vec3 color = uGround;
-  color *= 1.0 + uWashNoise * (fbm(vec3(p * 2.5, t * 0.3)) - 0.5) * 2.0;
+  vec3 color = uCanvas;
+  float debugValue = 0.0;
 
-  for (int i = 0; i < MAX_RECTS; i++) {
-    if (i >= uRectCount) break;
+  for (int i = 0; i < MAX_LAYERS; i++) {
+    if (i >= uLayerCount) break;
 
-    vec4 rect = uRects[i];
-    vec4 params = uRectParams[i];
-    float softness = params.x;
-    float opacity = params.y;
-    float seed = params.z;
+    vec4 pigment = uLayerPigment[i];
+    vec4 thick = uLayerThickness[i];
+    vec4 edge = uLayerEdge[i];
+    vec4 shapes = uLayerShapes[i];
+    float seed = shapes.z;
 
-    // Slow, independent wandering of each rectangle's position and size.
-    vec2 center = rect.xy * scale + uDrift * vec2(
-      sin(t * 0.71 + seed * 3.1),
-      cos(t * 0.53 + seed * 1.7)
-    );
-    vec2 halfSize = rect.zw * scale + uDrift * 0.6 * vec2(
-      sin(t * 0.37 + seed * 2.3),
-      cos(t * 0.29 + seed * 4.1)
-    );
+    // Borders grow and recede around their rest position. The noise evolves
+    // through time rather than scrolling, so edges breathe instead of slide.
+    float breath = (fbm(vec3(p * 6.0 + seed * 11.0, t * 0.5)) - 0.5) * 2.0;
+    float d = layerDistance(p, scale, shapes) + breath * edge.y;
 
-    // Roughen the edge with evolving noise so it breathes rather than slides.
-    float edge = (fbm(vec3(p * 6.0 + seed * 11.0, t * 0.5)) - 0.5) * 2.0;
-    float d = sdBox(p, center, halfSize) + edge * uEdgeNoise;
+    // 1 inside the shape, thinning to 0 across the border.
+    float extent = 1.0 - smoothstep(-edge.x, edge.x, d);
 
-    float mask = 1.0 - smoothstep(-softness, softness, d);
+    // Uneven application. Static and anchored to the canvas: paint that has
+    // been laid down doesn't move.
+    float patches = (fbm(vec3(p * thick.z + seed * 7.0, seed * 3.0)) - 0.5) * 2.0;
+    float thickness = max(thick.x * extent * (1.0 + thick.y * patches), 0.0);
 
-    // Uneven, layered-wash density inside the field.
-    vec3 fill = uRectColors[i];
-    fill *= 1.0 + uWashNoise * (fbm(vec3(p * 3.0 + seed * 7.0, t * 0.4)) - 0.5) * 2.0;
+    // Glaze model: thin paint tints what lies beneath (transmission), thick
+    // paint hides it (coverage). See docs/README.md, section 7.4.
+    vec3 body = uLayerColor[i];
+    vec3 transmission = pow(max(body, vec3(1e-4)), vec3(pigment.y * thickness));
+    float coverage = 1.0 - exp(-pigment.x * thickness);
+    color = mix(color * transmission, body, coverage);
 
-    color = mix(color, fill, mask * opacity);
+    if (i == uDebugLayer) {
+      // Thickness 1 shows as mid-grey; 2 or more as white.
+      debugValue = uDebugView == 1 ? thickness * 0.5 : coverage;
+    }
+  }
+
+  if (uDebugView != 0) {
+    // Raw values, deliberately not color-managed.
+    gl_FragColor = vec4(vec3(clamp(debugValue, 0.0, 1.0)), 1.0);
+    return;
   }
 
   // Static canvas grain, tied to the painting rather than the screen.
