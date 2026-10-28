@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as config from './config.js';
 import { Painting } from './Painting.js';
+import { FadeClock } from './FadeClock.js';
 
 const { painting } = config;
 const container = document.getElementById('app');
@@ -16,7 +17,8 @@ const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
 camera.position.z = 1;
 
-const canvas = new Painting(config);
+const fadeClock = new FadeClock();
+const canvas = new Painting(config, fadeClock);
 scene.add(canvas.mesh);
 
 // The tuning panel is only loaded on request, keeping it out of the

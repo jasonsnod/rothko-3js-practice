@@ -5,7 +5,7 @@ import fragmentShader from './shaders/painting.frag.glsl?raw';
 const MAX_LAYERS = 6;
 const MAX_SHAPES = 12;
 
-export const DEBUG_VIEWS = { final: 0, thickness: 1, coverage: 2, strokes: 3 };
+export const DEBUG_VIEWS = { final: 0, thickness: 1, coverage: 2, strokes: 3, exposure: 4, fade: 5 };
 
 const DEG = Math.PI / 180;
 
@@ -23,12 +23,17 @@ function seedFromName(name) {
 //
 // The config objects are kept by reference: after changing any of them (as
 // the debug panel does), call sync() to push the new values to the shader.
+//
+// fadeClock (see FadeClock.js) supplies the total viewing time that drives
+// fading.
 export class Painting {
-  constructor({ painting, surface, layers, motion }) {
+  constructor({ painting, surface, layers, motion, fading }, fadeClock) {
     this.aspect = painting.widthCm / painting.heightCm;
     this.surface = surface;
     this.layers = layers;
     this.motion = motion;
+    this.fading = fading;
+    this.fadeClock = fadeClock;
 
     // Preview multiplier for watching slow motion quickly. Not part of the
     // config, so it can't be copied into it by accident.
@@ -58,6 +63,8 @@ export class Painting {
         uLayerBand: { value: vec4s(MAX_LAYERS) },
         uLayerShapes: { value: vec4s(MAX_LAYERS) },
         uShapes: { value: vec4s(MAX_SHAPES) },
+        uFade: { value: new THREE.Vector4() },
+        uLight: { value: new THREE.Vector4() },
         uDebugView: { value: DEBUG_VIEWS.final },
         uDebugLayer: { value: 0 },
       },
@@ -83,6 +90,12 @@ export class Painting {
     u.uCanvas.value.set(surface.canvas);
     u.uGrain.value = surface.grain;
     u.uLayerCount.value = layers.length;
+
+    // uFade.x (progress) is set every frame in update().
+    const { fading } = this;
+    const light = fading.light.angle * DEG;
+    u.uFade.value.set(this.fadeProgress(), fading.washout, fading.thinPaint, 0);
+    u.uLight.value.set(Math.cos(light), Math.sin(light), fading.light.gradient, fading.light.variation);
 
     // Shapes from all layers go into one flat array; each layer records the
     // range it owns.
@@ -131,10 +144,25 @@ export class Painting {
     this.material.uniforms.uDebugLayer.value = layerIndex;
   }
 
+  // How faded the painting is overall, from 0 up to fading.strength.
+  //
+  // An exponential approach: fastest at first, ever slower, never quite
+  // stopping. The rate is chosen so 95% of the way is reached after
+  // fading.hours of viewing (e^-3 ≈ 0.05).
+  fadeProgress() {
+    const { hours, strength } = this.fading;
+    const seconds = this.fadeClock.seconds;
+    return strength * (1 - Math.exp((-3 * seconds) / Math.max(hours * 3600, 1)));
+  }
+
   // Time accumulates per frame (rather than elapsed x speed) so that changing
-  // the speed live doesn't make the painting jump.
+  // the speed live doesn't make the painting jump. The preview multiplier
+  // speeds up fading too, so fading can be previewed quickly.
   update(deltaSeconds) {
-    this.material.uniforms.uTime.value += deltaSeconds * this.motion.speed * this.timeScale;
+    const seconds = deltaSeconds * this.timeScale;
+    this.material.uniforms.uTime.value += seconds * this.motion.speed;
+    this.fadeClock.advance(seconds);
+    this.material.uniforms.uFade.value.x = this.fadeProgress();
   }
 
   dispose() {

@@ -36,7 +36,8 @@ rothko-practice/
 ├── src/
 │   ├── main.js                     Renderer, camera, resize, animation loop
 │   ├── Painting.js                 Builds the plane + ShaderMaterial from config
-│   ├── config.js                   Layers, paint, motion (tuning lives here)
+│   ├── FadeClock.js                Counts viewing time across visits (fading)
+│   ├── config.js                   Layers, paint, motion, fading (tuning lives here)
 │   ├── debug.js                    Live tuning panel, loaded only with ?debug
 │   ├── style.css                   Fullscreen layout, wall color
 │   └── shaders/
@@ -55,6 +56,8 @@ config.js ──► Painting.js ──(uniforms)──► painting.frag.glsl
 debug.js ─────────┤  (edits config, then calls painting.sync())
                   │
 main.js ──(time since last frame)
+                  │
+FadeClock.js ◄────┘  (viewing time, saved in the browser)
 ```
 
 ---
@@ -207,8 +210,9 @@ See [`WebGLRenderer`](https://threejs.org/docs/pages/WebGLRenderer.html).
 ## 6. The `Painting` class ([`src/Painting.js`](../src/Painting.js))
 
 `Painting` turns the human-friendly config into shader uniforms. It exposes
-`mesh`, `aspect`, `timeScale`, `sync()`, `setDebugView()`, `update(deltaSeconds)`,
-and `dispose()`.
+`mesh`, `aspect`, `timeScale`, `fadeClock`, `sync()`, `setDebugView()`,
+`fadeProgress()`, `update(deltaSeconds)`, and `dispose()`. It's constructed
+with the config and a `FadeClock` (§7.9).
 
 It keeps the config objects **by reference**. The debug panel edits those
 objects directly and then calls `sync()`, which rewrites every uniform value
@@ -267,6 +271,8 @@ and layers are stored separately:
 | `uShapes[j]` (`vec4`) | center.xy, half-size.xy | All shapes from all layers in one flat array. This is exactly what the box distance function needs (§7.2). |
 | `uLayerShapes[i]` (`vec4`) | first shape index, shape count, seed, outlined layer | Which slice of `uShapes` the layer owns. For a band layer, `w` is the index of the layer it outlines; otherwise −1. |
 | `uLayerBand[i]` (`vec4`) | width, offset, patchiness, patch scale | Band layers only (§7.8). |
+| `uFade` (`vec4`) | progress, washout, thin paint | Fading (§7.9). Progress is updated every frame; the rest on `sync()`. |
+| `uLight` (`vec4`) | light direction xy, gradient, variation | Where the fading light came from (§7.9). The direction is converted from degrees to a unit vector in JS. |
 | `uLayerColor[i]` (`vec3`) | linear RGB | `THREE.Color` converts it automatically (§7.6). |
 | `uLayerPigment[i]` (`vec4`) | hiding, glaze | Paint properties (§7.4). |
 | `uLayerThickness[i]` (`vec4`) | base, variation, scale | How the paint was applied (§7.4). |
@@ -305,6 +311,12 @@ how fast the painting moves without changing the character of the motion.
 `timeScale` is a separate preview multiplier that is deliberately **not** in
 the config, so "copy config" can never save a sped-up value by accident.
 
+`update()` also advances the fade clock by the same (preview-scaled) time and
+sets the fade progress uniform. Scaling fading by the preview multiplier
+means fading can be previewed too, at the cost that previewing advances the
+saved progress in that browser. The debug panel's **reset fading** undoes
+that.
+
 ---
 
 ## 7. The fragment shader ([`src/shaders/painting.frag.glsl`](../src/shaders/painting.frag.glsl))
@@ -323,10 +335,14 @@ The shader runs in this order for every pixel:
       layer (§7.8). Across borders, the strokes decide where paint survives
       (dry-brush breakup).
    3. Turn that into a **thickness** of paint.
-   3. Composite the layer's paint over the color so far using the **glaze
+   4. **Fade** the layer's pigment by how much light it has had, more where
+      the paint is thin (§7.9).
+   5. Composite the layer's paint over the color so far using the **glaze
       model**: thin paint tints what's beneath; thick paint hides it.
-4. Apply canvas grain.
-5. Convert to the output color space.
+4. **Wash out** the surface: desaturate it slightly and add a faint pale veil,
+   in proportion to fading (§7.9).
+5. Apply canvas grain.
+6. Convert to the output color space.
 
 If a debug view is selected, step 3 also records the chosen layer's thickness
 or coverage, and that value is shown in grayscale instead of the color.
@@ -661,6 +677,99 @@ three.js uses for WebGL 2 (see the arrays section of the
 [GLSL ES 3.00 spec](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)).
 GLSL ES 1.00, used by WebGL 1, didn't allow this.
 
+### 7.9 Fading
+
+The painting's colors slowly get lighter and slightly washed out while it's
+on view, as if from decades of light exposure. Alongside the breathing
+borders, this is the second way the painting changes over time.
+
+#### How time is counted ([`src/FadeClock.js`](../src/FadeClock.js))
+
+**Decisions:**
+
+- **Viewing time, not wall-clock time.** The clock advances by the same frame
+  times as the animation. Browsers pause
+  [`requestAnimationFrame`](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame)
+  in hidden tabs, and `Timer` doesn't report the gap afterwards (§5), so
+  fading only happens while someone could be looking.
+- **Resumes exactly between visits.** The total is saved in
+  [`localStorage`](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage)
+  under `rothko-practice:fade-seconds`. Other options considered were
+  restarting on every load, or partially recovering while away; resuming
+  exactly was chosen.
+- **When it saves:** every 5 seconds of viewing, and when the page is hidden
+  ([`visibilitychange`](https://developer.mozilla.org/en-US/docs/Web/API/Document/visibilitychange_event))
+  or closed ([`pagehide`](https://developer.mozilla.org/en-US/docs/Web/API/Window/pagehide_event)).
+  `pagehide` is used rather than `unload`, which is unreliable, especially on
+  mobile. At most a few seconds are lost if the browser quits abruptly.
+- **Storage can fail** (private windows, blocked site data), so every access
+  is wrapped in `try`/`catch`. If it fails, fading just starts fresh on each
+  visit.
+- Progress is per browser. Two visitors, or two browsers, each have their own.
+
+#### The progress curve
+
+```js
+progress = strength × (1 − e^(−3 × seconds / (hours × 3600)))
+```
+
+- An **exponential approach** rather than a straight line. It's fastest at
+  first and keeps slowing, so the painting never reaches a final, frozen
+  state. That keeps "constantly shifting" true indefinitely, while colors
+  never recover.
+- The **3** sets the meaning of `hours`: `e^−3 ≈ 0.05`, so after `hours` of
+  viewing, fading is 95% of the way to `strength`. Changing `fading.hours` is
+  the single control for how long fading takes.
+- **`strength`** caps how far it can ever go. The default, 0.12, gives "lighter,
+  slightly washed out". At 0.25 the black turned grey-brown and the maroon
+  pink, because the pigment-loss maths lifts very dark colors strongly.
+
+#### Where it fades more: exposure and thinness
+
+Fading varies across the canvas, as it would on a real painting:
+
+- **Exposure** (`exposure()` in the shader): around 1, higher on the side the
+  light comes from (`fading.light.angle`, `gradient`), plus low-frequency
+  noise so it's never perfectly even (`variation`). Static. The `exposure`
+  debug view shows it.
+- **Thin paint fades sooner**, since it has less pigment to lose. The factor
+  is `mix(1, 2 / (1 + thickness), thinPaint)`: 1 at normal thickness, rising
+  toward 2 where paint is very thin. This shows most at the ragged borders
+  and in thin patches.
+
+Each layer's fade amount is `progress × exposure × thinness`, capped at 0.95.
+The `fade` debug view shows it for the selected layer.
+
+#### Two parts to fading
+
+**1. Pigment loss** (per layer, before compositing). Less pigment means less
+light absorbed:
+
+```glsl
+vec3 body = pow(color, vec3(1.0 - fade));
+```
+
+With `absorption = −ln(color)` (as in §7.4), multiplying absorption by
+`(1 − fade)` is the same as raising the color to that power. It lightens
+each channel in proportion to how strongly it absorbed, which is how a
+fading dye behaves. Faded paint also hides a little less
+(`hiding × (1 − 0.3 × fade)`), so lower layers show through slightly more
+over time. Because this changes the pigment rather than the finished image,
+the layered structure stays intact: a faded black glaze over maroon is still
+a glaze over maroon.
+
+**2. Washing out** (once, over all layers). Aged paint surfaces scatter light
+chalkily. The color is pulled toward its own grey (luminance, using the
+[Rec. 709 weights](https://en.wikipedia.org/wiki/Rec._709#Luma_coefficients)
+for linear RGB) and gets a faint warm-white veil, both in proportion to
+`progress × exposure × washout`. This is a surface effect, so it's applied
+after compositing rather than per layer.
+
+**Options considered** for the look of fading: simply blending the final
+image toward a lighter color, or the pigment-based model above. Blending the
+final image is simpler, but it would fade everything uniformly. It also
+couldn't make thin paint fade faster than thick, or let underlayers emerge.
+
 ---
 
 ## 8. Configuration ([`src/config.js`](../src/config.js))
@@ -756,6 +865,18 @@ All motion values were chosen to be just at the edge of noticeable:
 When tuning, use the debug panel's **preview speed ×** slider to see what the
 motion does, rather than editing `speed`.
 
+### Fading values
+
+- `hours: 4`: 95% faded after four hours of viewing. Change this one number to
+  make fading faster or slower.
+- `strength: 0.12`: see §7.9 for why it's this low.
+- `washout: 0.5` and `thinPaint: 0.6`: moderate, so pigment loss does most of
+  the work and thin areas fade visibly but not dramatically sooner.
+- `light.angle: 120`: light from the upper left, a common gallery
+  arrangement with no particular significance. `gradient: 0.35` makes that
+  side fade about 35% faster than average, and `variation: 0.25` keeps it
+  uneven.
+
 ---
 
 ## 9. Debug panel ([`src/debug.js`](../src/debug.js))
@@ -764,9 +885,12 @@ With no reference image, tuning happens by describing what looks wrong and
 adjusting values. The panel makes that fast and gives things names to refer to.
 
 - **Opening it:** add `?debug` to the URL. Press **H** to hide or show it.
-  Add `&view=thickness&layer=black` (or `coverage` or `strokes`, or another
-  layer name) to start on a specific view, and `&preview=50` to start with
-  time running 50× faster.
+  URL options:
+  - `&view=thickness&layer=black`: start on a specific view (`final`,
+    `thickness`, `coverage`, `strokes`, `exposure`, `fade`) and layer.
+  - `&preview=50`: start with time (motion and fading) running 50× faster.
+  - `&fade=4`: jump fading to 4 hours of viewing. This **changes the saved
+    progress** in that browser.
 - **Built with [lil-gui](https://lil-gui.georgealways.com/)**, the panel
   library used across the three.js examples. It's small, has no
   dependencies, and binds controls directly to properties of plain objects.
@@ -783,11 +907,12 @@ adjusting values. The panel makes that fast and gives things names to refer to.
 
 | Control | Purpose |
 | --- | --- |
-| View → show | `final`, `thickness` (thickness 1 = mid-grey), `coverage` (white = fully hidden beneath), or `strokes` (the brush stroke field). |
+| View → show | `final`, `thickness` (thickness 1 = mid-grey), `coverage` (white = fully hidden beneath), `strokes` (the brush stroke field), `exposure` (exposure 1 = mid-grey), or `fade` (the selected layer's fade amount; 0.5 = white). |
 | View → layer | Which layer the debug views show. |
 | View → preview speed × | Multiplies the speed of time (up to 200×) without changing the config. |
 | View → fps | Frames per second, averaged over half a second. |
 | Motion, Surface, Layer folders | Every value in `config.js`, including each shape's coordinates. Band layers show a **Band** folder in place of Edge and Shapes. |
+| Fading | The `fading` config values, plus **viewed (hours)** (the saved viewing time; drag to jump), a **progress** readout, and **reset fading**. The last three affect this browser's saved progress, not the config. |
 | copy config | Copies the current values as JSON to the clipboard, and logs them to the console as a fallback. Paste back into `config.js` to keep them. |
 
 ---

@@ -122,3 +122,23 @@ export const motion = {
   // Global time scale. Keep this small: the shifting should be felt, not seen.
   speed: 0.04,
 };
+
+// Colors slowly fade lighter and slightly washed out, as if from years of
+// light exposure. Fading counts viewing time, is saved in the browser, and
+// resumes exactly where it left off on the next visit.
+export const fading = {
+  // Hours of viewing for colors to (almost) fully fade: 95% of the way there.
+  // After that they keep fading, ever more slowly, without quite stopping.
+  hours: 4,
+  // How far colors can ever fade. 0 = not at all, 1 = pigment almost gone.
+  strength: 0.12,
+  // How much fading also turns the surface chalky and desaturated, on top of
+  // the colors simply getting lighter.
+  washout: 0.5,
+  // How much faster thin paint fades than thick paint (0 = no difference).
+  thinPaint: 0.6,
+  // The light that caused the fading: where it comes from (degrees, 0 = from
+  // the right, 90 = from above), how much stronger it is on that side, and
+  // how unevenly it falls.
+  light: { angle: 120, gradient: 0.35, variation: 0.25 },
+};

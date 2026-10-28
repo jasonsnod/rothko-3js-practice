@@ -19,7 +19,11 @@ uniform vec4 uLayerBand[MAX_LAYERS];       // x = width, y = offset, z = patchin
 
 uniform vec4 uShapes[MAX_SHAPES];          // xy = center, zw = half-size (normalized)
 
-uniform int uDebugView;   // 0 = final, 1 = thickness, 2 = coverage, 3 = strokes
+uniform vec4 uFade;   // x = progress (0 to strength), y = washout, z = thin paint
+uniform vec4 uLight;  // xy = direction light comes from, z = gradient, w = variation
+
+uniform int uDebugView;   // 0 = final, 1 = thickness, 2 = coverage, 3 = strokes,
+                          // 4 = exposure, 5 = fade
 uniform int uDebugLayer;
 
 varying vec2 vUv;
@@ -205,6 +209,14 @@ float brushed(float amount, float strokes) {
   return smoothstep(bar - 0.25, bar + 0.25, strokes);
 }
 
+// How much light has fallen on this point over the years, around 1: more on
+// the side the light comes from, and never perfectly even. Static.
+float exposure(vec2 p) {
+  float side = dot(vUv - 0.5, uLight.xy) * 2.0;  // about -1 (away) to +1 (toward)
+  float uneven = (fbm2(p * 1.5 + 41.0) - 0.5) * 2.0;
+  return max(1.0 + uLight.z * side + uLight.w * uneven, 0.0);
+}
+
 void main() {
   float t = uTime;
 
@@ -214,6 +226,7 @@ void main() {
 
   vec3 color = uCanvas;
   float debugValue = 0.0;
+  float light = exposure(p);
 
   // First pass: border distance for every shaped layer. Band layers outline
   // another layer's border, and may sit beneath it, so these are computed
@@ -266,11 +279,22 @@ void main() {
       * max(1.0 + thick.y * patches, 0.0)
       * max(1.0 + strokeParams.w * (strokes * 2.0 - 1.0), 0.0);
 
+    // Fading, part 1: pigment lost to light. Thin paint has less pigment to
+    // lose, so it fades sooner (thickness 1 fades at the normal rate).
+    float thinFactor = mix(1.0, 2.0 / (1.0 + thickness), uFade.z);
+    float fade = clamp(uFade.x * light * thinFactor, 0.0, 0.95);
+
+    // Less pigment means less absorption. With absorption = -ln(color), scaling
+    // absorption by (1 - fade) is the same as raising the color to that power:
+    // it lightens each channel in proportion to how strongly it absorbed.
+    // Faded paint also hides a little less of what's beneath.
+    vec3 body = pow(max(uLayerColor[i], vec3(1e-4)), vec3(1.0 - fade));
+    float hiding = pigment.x * (1.0 - 0.3 * fade);
+
     // Glaze model: thin paint tints what lies beneath (transmission), thick
     // paint hides it (coverage). See docs/README.md, section 7.4.
-    vec3 body = uLayerColor[i];
-    vec3 transmission = pow(max(body, vec3(1e-4)), vec3(pigment.y * thickness));
-    float coverage = 1.0 - exp(-pigment.x * thickness);
+    vec3 transmission = pow(body, vec3(pigment.y * thickness));
+    float coverage = 1.0 - exp(-hiding * thickness);
     color = mix(color * transmission, body, coverage);
 
     if (i == uDebugLayer) {
@@ -278,14 +302,26 @@ void main() {
       if (uDebugView == 1) debugValue = thickness * 0.5;
       else if (uDebugView == 2) debugValue = coverage;
       else if (uDebugView == 3) debugValue = strokes;
+      // Fade 0.5 shows as white.
+      else if (uDebugView == 5) debugValue = fade * 2.0;
     }
   }
+
+  // Exposure 1 shows as mid-grey.
+  if (uDebugView == 4) debugValue = light * 0.5;
 
   if (uDebugView != 0) {
     // Raw values, deliberately not color-managed.
     gl_FragColor = vec4(vec3(clamp(debugValue, 0.0, 1.0)), 1.0);
     return;
   }
+
+  // Fading, part 2: washing out. An aged paint surface scatters light
+  // chalkily, so the color loses saturation and gains a faint pale veil.
+  // This is a surface effect, so it applies once, over all the layers.
+  float wash = clamp(uFade.x * light, 0.0, 1.0) * uFade.y;
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  color = mix(color, vec3(luma), wash * 0.6) + wash * vec3(0.03, 0.026, 0.025);
 
   // Static canvas grain, tied to the painting rather than the screen.
   float grain = hash13(vec3(floor(vUv * vec2(2048.0 * uAspect, 2048.0)), 0.0)) - 0.5;

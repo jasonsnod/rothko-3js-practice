@@ -77,10 +77,10 @@ the effects must be easy to isolate and to talk about by name.
 - [x] Border band debug view: not needed as a separate view. Band layers are
       ordinary layers, so the existing thickness and coverage views show them
       (`&layer=red-outer`).
-- [ ] Add a debug view for fading exposure (Phase 4).
+- [x] Add debug views for fading: `exposure` and `fade` (Phase 4).
 - [x] Add an **fps** readout, and a `&preview=<n>` URL option.
 - [x] Add a **"preview speed ×"** override (up to 200×), kept out of the config.
-- [ ] Add a **"fade progress"** slider: added in Phase 4.
+- [x] Add a **"fade progress"** control: added in Phase 4 as `viewed (hours)`.
 - [x] Add a **"copy config"** button that copies the current values as JSON, so
       a good state found in the panel can be pasted back into `config.js`.
 
@@ -213,32 +213,41 @@ more than thick ones.
 
 ### Fading model
 
-- [ ] A **fade amount** at each point:
-      `fade(p, t) = progress(t) × exposure(p) × thinness(p)`, where:
-  - `exposure(p)`: a gentle gradient across the canvas plus low-frequency noise
-    (light never falls perfectly evenly)
-  - `thinness(p)`: derived from layer thickness, so thin paint fades sooner
-- [ ] Apply fading in two parts:
-  1. **Pigment loss**: scale absorption down by `(1 - fade × k)`, which makes
-     colors lighter.
-  2. **Washing out**: blend slightly toward a pale, desaturated version
-     (simulating chalky surface scattering), weighted by `fade`.
-- [ ] Fade **pigments, not the final image**, so faded areas keep their layered
+- [x] A **fade amount** at each point, per layer:
+      `fade = progress(t) × exposure(p) × thinness(thickness)`, where:
+  - `exposure(p)`: a gradient from the light's direction plus low-frequency
+    noise (light never falls perfectly evenly). Settings in `fading.light`.
+  - `thinness`: from layer thickness, so thin paint fades sooner
+    (`fading.thinPaint`).
+- [x] Apply fading in two parts:
+  1. **Pigment loss**: absorption scaled by `(1 − fade)`, i.e. the color raised
+     to the power `1 − fade`, which makes colors lighter. Faded paint also
+     hides slightly less.
+  2. **Washing out**: blend slightly toward a desaturated version plus a faint
+     pale veil (chalky surface scattering), weighted by
+     `progress × exposure × fading.washout`. Applied once, over all layers.
+- [x] Fade **pigments, not the final image**, so faded areas keep their layered
       structure.
+- [x] Debug views: `exposure` and `fade` (per layer).
 
 ### Animation behavior
 
 Decided: fading runs **one way, continuously**, while the stroke borders
 breathe (Phase 2). Colors never recover.
 
-- [ ] `progress(t) = maxFade × (1 − e^(−t/τ))`. Fading is fastest at first and
-      keeps slowing, so it never fully stops and never reaches a hard end
-      state.
-- [ ] Settings: `maxFade` (how washed out it can ever get) and `τ` (the time
-      constant: by `t = τ`, about 63% of the maximum fade has happened).
-- [ ] Decide the time scale `τ`: minutes, hours, or longer?
-- [ ] Decide whether fading starts fresh on each page load, or persists
-      between visits (stored in the browser).
+- [x] `progress = strength × (1 − e^(−3t / duration))`. Fastest at first, ever
+      slower, never fully stopping.
+- [x] Time scale: **`fading.hours = 4`**, the single setting to adjust. The
+      factor of 3 makes `hours` mean "95% faded", which is easier to reason
+      about than a raw time constant.
+- [x] **Resumes exactly between visits**: viewing time is saved in
+      `localStorage` (every 5 s, and when the page is hidden or closed).
+      It only counts while the page is visible.
+- [x] Debug panel: `viewed (hours)` slider, `progress` readout,
+      `reset fading`; URL option `&fade=<hours>`.
+- [x] `strength` lowered from 0.25 to 0.12: at 0.25 the black turned
+      grey-brown by 4 hours, far beyond "slightly washed out".
+- [ ] **Tune** from feedback: how washed out at 4 hours, and how uneven.
 
 ---
 
@@ -263,7 +272,7 @@ low-frequency thickness variation, and exposure.
 2. ~~Phase 1: thickness + glaze model~~ (done; tuning ongoing)
 3. ~~Phase 2: brush-stroke edges, including breathing stroke borders~~ (done; tuning ongoing)
 4. ~~Phase 3: red border layer~~ (done; tuning ongoing)
-5. Phase 4: animated fading (decide `τ` and persistence first)
+5. ~~Phase 4: animated fading~~ (done; tuning ongoing)
 6. Phase 5: pre-computed static fields, when needed
 
 Edges and the border band are both built from the thickness field, and fading

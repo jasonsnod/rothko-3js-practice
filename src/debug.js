@@ -2,14 +2,17 @@ import GUI from 'lil-gui';
 import { DEBUG_VIEWS } from './Painting.js';
 
 // Live tuning panel. Loaded only when the page URL contains ?debug.
-// Press H to hide or show it. Add &view=<final|thickness|coverage|strokes> and
-// &layer=<layer name> to start on a specific debug view, and &preview=<n> to
-// start with time running n times faster.
+// Press H to hide or show it. URL options:
+//   &view=<final|thickness|coverage|strokes|exposure|fade>  starting view
+//   &layer=<layer name>  layer for the per-layer views
+//   &preview=<n>         time (motion and fading) runs n times faster
+//   &fade=<hours>        jump fading to this much viewing time (this changes
+//                        the saved fading progress for this browser)
 //
 // Controls edit the config objects directly, then the painting re-syncs its
 // uniforms. "copy config" puts the current values on the clipboard as JSON so
 // they can be pasted back into config.js.
-export function createDebugPanel(painting, { surface, layers, motion }) {
+export function createDebugPanel(painting, { surface, layers, motion, fading }) {
   const gui = new GUI({ title: 'Black on Maroon' });
   gui.onChange(() => painting.sync());
 
@@ -24,6 +27,7 @@ export function createDebugPanel(painting, { surface, layers, motion }) {
   const applyView = () => painting.setDebugView(view.show, view.layer);
   applyView();
   painting.timeScale = Number(params.get('preview')) || 1;
+  if (params.has('fade')) painting.fadeClock.set(Number(params.get('fade')) * 3600 || 0);
 
   const viewFolder = gui.addFolder('View');
   viewFolder.add(view, 'show', DEBUG_VIEWS).onChange(applyView);
@@ -53,6 +57,28 @@ export function createDebugPanel(painting, { surface, layers, motion }) {
   const surfaceFolder = gui.addFolder('Surface');
   surfaceFolder.addColor(surface, 'canvas');
   surfaceFolder.add(surface, 'grain', 0, 0.2, 0.005);
+
+  // --- Fading -------------------------------------------------------------
+  const fadeFolder = gui.addFolder('Fading');
+  fadeFolder.add(fading, 'hours', 0.05, 24, 0.05);
+  fadeFolder.add(fading, 'strength', 0, 1, 0.01);
+  fadeFolder.add(fading, 'washout', 0, 1, 0.01);
+  fadeFolder.add(fading, 'thinPaint', 0, 1, 0.01).name('thin paint');
+  const lightFolder = fadeFolder.addFolder('Light').close();
+  lightFolder.add(fading.light, 'angle', -180, 180, 1);
+  lightFolder.add(fading.light, 'gradient', 0, 1, 0.01);
+  lightFolder.add(fading.light, 'variation', 0, 1, 0.01);
+
+  // Viewing time so far, saved in this browser. Not part of the config.
+  const clock = {
+    get elapsedHours() { return painting.fadeClock.seconds / 3600; },
+    set elapsedHours(hours) { painting.fadeClock.set(hours * 3600); },
+    get progress() { return Number(painting.fadeProgress().toFixed(3)); },
+    reset() { painting.fadeClock.set(0); },
+  };
+  fadeFolder.add(clock, 'elapsedHours', 0, 12, 0.01).name('viewed (hours)').listen();
+  fadeFolder.add(clock, 'progress').disable().listen();
+  fadeFolder.add(clock, 'reset').name('reset fading');
 
   // --- Layers -------------------------------------------------------------
   for (const layer of layers) {
@@ -103,7 +129,7 @@ export function createDebugPanel(painting, { surface, layers, motion }) {
   // --- Export -------------------------------------------------------------
   gui.add({
     copyConfig() {
-      const json = JSON.stringify({ surface, layers, motion }, null, 2);
+      const json = JSON.stringify({ surface, layers, motion, fading }, null, 2);
       console.log(json);
       navigator.clipboard?.writeText(json).catch(() => {
         console.warn('Clipboard unavailable; config was logged above instead.');
