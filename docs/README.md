@@ -41,8 +41,11 @@ rothko-practice/
 │   ├── debug.js                    Live tuning panel, loaded only with ?debug
 │   ├── style.css                   Fullscreen layout, wall color
 │   └── shaders/
+│       ├── noise.glsl              Noise + brush stroke functions (shared)
+│       ├── fields.vert.glsl        Full-screen pass for baking
+│       ├── fields.frag.glsl        Bakes the static fields into a texture array
 │       ├── painting.vert.glsl      Passes UVs through
-│       └── painting.frag.glsl      Paints the entire canvas
+│       └── painting.frag.glsl      Paints the canvas every frame
 └── docs/
     ├── README.md                   This file
     └── PLAN.md                     Roadmap for the paint-realism work
@@ -211,8 +214,9 @@ See [`WebGLRenderer`](https://threejs.org/docs/pages/WebGLRenderer.html).
 
 `Painting` turns the human-friendly config into shader uniforms. It exposes
 `mesh`, `aspect`, `timeScale`, `fadeClock`, `sync()`, `setDebugView()`,
-`fadeProgress()`, `update(deltaSeconds)`, and `dispose()`. It's constructed
-with the config and a `FadeClock` (§7.9).
+`fadeProgress()`, `bakeFields()`, `update(deltaSeconds)`, and `dispose()`.
+It's constructed with the config, a `FadeClock` (§7.9), and the renderer,
+which it needs to bake the static fields (§7.10).
 
 It keeps the config objects **by reference**. The debug panel edits those
 objects directly and then calls `sync()`, which rewrites every uniform value
@@ -230,8 +234,11 @@ note, so a changed value appears on the next frame.
 [`?raw` suffix](https://vite.dev/guide/assets#importing-asset-as-string), which
 imports a file's contents as a string. Separate files get GLSL syntax
 highlighting and linting in editors, and they keep JS and GLSL diffs apart.
-No plugin (such as `vite-plugin-glsl`) is needed yet. One would only become
-useful if we wanted `#include` between our own GLSL files.
+No plugin (such as `vite-plugin-glsl`) is needed. The one piece of code
+shared between shaders, `noise.glsl`, is simply prepended to both fragment
+shaders as a string in `Painting.js` (`noise + paintingFragment`). A plugin
+providing `#include` between our own files would only be worth it with
+several shared files.
 
 ### 6.2 Fixed-size uniform arrays with `MAX_LAYERS` and `MAX_SHAPES`
 
@@ -280,6 +287,9 @@ and layers are stored separately:
 | `uLayerStrokes[i]` (`vec4`) | patch size, angle, spread, interior | Brush stroke layout (§7.7). Angles are converted to radians in JS. |
 | `uLayerStreaks[i]` (`vec4`) | 1 / length, 1 / width | Streak size, converted to noise frequencies in JS so the shader multiplies instead of divides. |
 
+The two shader materials, painting and baking, share the same uniform
+**objects**, so one `sync()` updates both.
+
 Grouping scalars into `vec4`s keeps the number of separate uniforms down and
 leaves spare slots for later phases. Indices are stored as floats and rounded
 back to `int` in the shader. Integer uniform arrays would also work, but
@@ -323,13 +333,17 @@ that.
 
 The shader runs in this order for every pixel:
 
+Before any of this, the static fields (brush strokes, thickness patches,
+warp, band patchiness, light exposure) have been **baked** into a texture
+array (§7.10). The per-frame shader looks them up rather than computing them.
+
 1. Start with the color of bare canvas.
-2. **First pass:** for every shaped layer, measure the distance to its border
-   from a **warped** position, shifted by the breathing noise. Store these in
-   a small array.
+2. **First pass:** for each layer, look up its baked fields. For every shaped
+   layer, measure the distance to its border from a **warped** position,
+   shifted by the breathing noise. Store these in small arrays.
 3. **Second pass**, for each layer bottom to top (ground, red-outer, black,
    red-windows, maroon):
-   1. Compute the layer's **brush stroke field** (§7.7).
+   1. Read the layer's **brush stroke field** (§7.7).
    2. Work out how much of the layer is present at this pixel: inside its
       shapes for a shaped layer, or along another layer's border for a band
       layer (§7.8). Across borders, the strokes decide where paint survives
@@ -618,8 +632,8 @@ Two artifacts came up while tuning, with their fixes:
   lighter), so it dominates only in some patches.
 
 **Cost:** per layer, the stroke field takes 2 sets × 4 patches × 2 noise
-samples, plus 6 hashes per patch. Together with warping, breathing and
-patches, that is the most expensive part of the shader. See §11.
+samples, plus 6 hashes per patch. It was the most expensive part of the
+shader until it was moved into the baking pass (§7.10).
 
 ### 7.8 Band layers: the red along borders
 
@@ -770,6 +784,86 @@ image toward a lighter color, or the pigment-based model above. Blending the
 final image is simpler, but it would fade everything uniformly. It also
 couldn't make thin paint fade faster than thick, or let underlayers emerge.
 
+### 7.10 Baking the static fields (performance)
+
+With all four visual phases in place, the painting ran at about **44 fps** on
+the development machine. Counting the shader's work per pixel showed that
+almost all of it produced the same result every frame:
+
+| Field | Changes over time? | Approx. cost per pixel, before |
+| --- | --- | --- |
+| Brush strokes (5 layers) | No | ~440 hashes |
+| Thickness patches (5 layers) | No | ~200 |
+| Warp offsets | No | ~50 |
+| Band patchiness, exposure | No | ~35 |
+| Breathing (3 shaped layers) | **Yes** | ~120 |
+
+**Options considered:**
+
+1. **Lower the render resolution** (cap the pixel ratio lower, or render to a
+   smaller target and upscale). Simple, but blurs everything, including the
+   fine canvas grain, to save work that didn't need doing in the first place.
+2. **Fewer noise octaves or simpler noise.** Cheaper, but changes the look
+   that was tuned in Phases 1–4.
+3. **Compute the static fields once into textures**, and look them up each
+   frame.
+
+**Chosen: option 3.** It removes about 85% of the per-pixel work without
+changing the look. A pixel comparison of renders before and after showed a
+mean difference of 0.3 on a 0–765 scale, no more than the breathing motion
+changes between two frames.
+
+#### How it works
+
+- **Storage:** a three.js
+  [`WebGLArrayRenderTarget`](https://threejs.org/docs/pages/WebGLArrayRenderTarget.html):
+  one texture with several **slices**, one per layer, plus one for
+  exposure. The main shader reads it as a `sampler2DArray`, with the layer
+  index as the third texture coordinate.
+- **Why an array texture, not separate textures:** GLSL ES 3.00 only allows
+  indexing an array of *samplers* with a constant expression, so
+  `uFields[i]` inside the layer loop isn't portable. An array texture takes
+  the slice as an ordinary coordinate, so `texture(uFields, vec3(vUv, i))`
+  works with a loop index.
+- **Baking:** [`fields.frag.glsl`](../src/shaders/fields.frag.glsl) draws a
+  full-screen quad into each slice in turn. In
+  [`renderer.setRenderTarget(target, slice)`](https://threejs.org/docs/pages/WebGLRenderer.html),
+  the second argument (named `activeCubeFace`) selects the slice for array
+  targets. That behaviour isn't spelled out in the docs; it's in the
+  [`WebGLRenderer` source](https://github.com/mrdoob/three.js/blob/dev/src/renderers/WebGLRenderer.js),
+  where `activeCubeFace` is used as the layer for 3D and array targets.
+- **When:** `sync()` marks the fields stale, and the next `update()` re-bakes
+  them before rendering. Dragging a slider in the debug panel therefore costs
+  one bake per frame at most, however many values change.
+- **Channel layout** (per layer slice; documented at the top of
+  `fields.frag.glsl`): R = strokes, G = thickness patches, B/A = warp offset
+  (shaped layers) or B = band presence (band layers). The exposure slice holds
+  exposure ÷ 2 in R.
+
+#### Decisions
+
+- **8-bit channels**, not floating point. Every stored value is in [0, 1]
+  (signed values are stored as raw fBm and decoded with `(x − 0.5) × 2`),
+  and they only feed soft transitions. The finest step, 1/255, moves a warped
+  border by under 0.0002 of the canvas height. 8-bit also uses half the memory
+  of half-float and is supported as a render target everywhere.
+- **The warp amount is applied at draw time**, not baked. The texture stores
+  the unit offset, and the main shader multiplies by `edge.warp`, so changing
+  the warp amount needs no re-bake. (Re-baking happens on every `sync()`
+  anyway, but this keeps the baked data independent of that setting.)
+- **Resolution tied to the painting, not the screen:** `quality.fieldResolution`
+  (1024 texels tall, about 1464 wide). The finest stroke detail is about 190
+  cycles per canvas height, so 1024 gives over 5 texels per cycle, enough
+  for bilinear filtering to reproduce it. On very large screens the strokes
+  are magnified slightly; raise this setting if they ever look soft. Memory:
+  7 slices × ~6 MB ≈ 42 MB of graphics memory.
+- **Breathing stays live**, since it's the one field that changes over time.
+  It's also now skipped for layers with `breath: 0` (the ground), a cheap
+  uniform branch that saves one full 5-octave fBm per pixel.
+- **Shared noise code:** both shaders need the noise and stroke functions, so
+  they live in [`noise.glsl`](../src/shaders/noise.glsl), prepended to each
+  (§6.1).
+
 ---
 
 ## 8. Configuration ([`src/config.js`](../src/config.js))
@@ -865,6 +959,12 @@ All motion values were chosen to be just at the edge of noticeable:
 When tuning, use the debug panel's **preview speed ×** slider to see what the
 motion does, rather than editing `speed`.
 
+### Quality
+
+- `quality.fieldResolution: 1024`: the height of the baked-field textures
+  (§7.10). It isn't in the debug panel because changing it means recreating
+  the texture; edit `config.js` and reload.
+
 ### Fading values
 
 - `hours: 4`: 95% faded after four hours of viewing. Change this one number to
@@ -932,13 +1032,12 @@ adjusting values. The panel makes that fast and gives things names to refer to.
 
 The roadmap lives in [PLAN.md](PLAN.md). Beyond that:
 
-- **GPU cost is unmeasured on real hardware.** Each pixel now computes a stroke
-  field and patches for all five layers, plus warp and breathing for the
-  three shaped ones. Headless
-  screenshots use a software renderer, so their frame rate means nothing. If
-  the **fps** readout in the debug panel is low, pre-computing the static
-  fields into a texture (PLAN.md, Phase 5) would remove most of the cost,
-  since only the breathing changes over time.
+- **Frame rate after baking is unmeasured on real hardware.** It was about 44
+  fps before Phase 5. Headless screenshots use a software renderer, so their
+  frame rate means nothing in absolute terms (it rose from 1 to 4 fps there).
+  If it's still below 60, the remaining per-frame cost is mostly the
+  breathing noise (two shaped layers × 5-octave 3D fBm), and the next levers
+  are fewer breathing octaves or a lower pixel-ratio cap (§5).
 - **Occasional small grid patches** remain where both stroke sets cross at
   similar strength (§7.7).
 - **No reduced-motion handling:** honoring

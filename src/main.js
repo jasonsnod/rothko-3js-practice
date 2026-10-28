@@ -18,7 +18,7 @@ const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
 camera.position.z = 1;
 
 const fadeClock = new FadeClock();
-const canvas = new Painting(config, fadeClock);
+const canvas = new Painting(config, fadeClock, renderer);
 scene.add(canvas.mesh);
 
 // The tuning panel is only loaded on request, keeping it out of the

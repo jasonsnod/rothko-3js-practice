@@ -1,6 +1,9 @@
 import * as THREE from 'three';
+import noise from './shaders/noise.glsl?raw';
 import vertexShader from './shaders/painting.vert.glsl?raw';
-import fragmentShader from './shaders/painting.frag.glsl?raw';
+import paintingFragment from './shaders/painting.frag.glsl?raw';
+import fieldsVertex from './shaders/fields.vert.glsl?raw';
+import fieldsFragment from './shaders/fields.frag.glsl?raw';
 
 const MAX_LAYERS = 6;
 const MAX_SHAPES = 12;
@@ -25,15 +28,16 @@ function seedFromName(name) {
 // the debug panel does), call sync() to push the new values to the shader.
 //
 // fadeClock (see FadeClock.js) supplies the total viewing time that drives
-// fading.
+// fading. The renderer is needed to bake the static fields (see bakeFields).
 export class Painting {
-  constructor({ painting, surface, layers, motion, fading }, fadeClock) {
+  constructor({ painting, surface, layers, motion, fading, quality }, fadeClock, renderer) {
     this.aspect = painting.widthCm / painting.heightCm;
     this.surface = surface;
     this.layers = layers;
     this.motion = motion;
     this.fading = fading;
     this.fadeClock = fadeClock;
+    this.renderer = renderer;
 
     // Preview multiplier for watching slow motion quickly. Not part of the
     // config, so it can't be copied into it by accident.
@@ -44,40 +48,101 @@ export class Painting {
     const vec4s = (n) => Array.from({ length: n }, () => new THREE.Vector4());
     const colors = (n) => Array.from({ length: n }, () => new THREE.Color());
 
+    // Static fields (strokes, patches, warp, band patchiness, exposure) are
+    // baked into this texture array: one slice per layer, plus one for
+    // exposure. Its resolution is tied to the painting, not the screen. 8-bit
+    // channels are enough: every stored value lies in [0, 1] (see
+    // fields.frag.glsl) and only feeds soft transitions.
+    const fieldHeight = quality.fieldResolution;
+    this.fieldsTarget = new THREE.WebGLArrayRenderTarget(
+      Math.round(fieldHeight * this.aspect), fieldHeight, MAX_LAYERS + 1,
+      { depthBuffer: false },
+    );
+
+    // Uniform objects are shared between the two materials, so sync() updates
+    // both at once.
+    const uniforms = {
+      uTime: { value: 0 },
+      uAspect: { value: this.aspect },
+      uCanvas: { value: new THREE.Color() },
+      uGrain: { value: 0 },
+      uLayerCount: { value: 0 },
+      uLayerColor: { value: colors(MAX_LAYERS) },
+      uLayerPigment: { value: vec4s(MAX_LAYERS) },
+      uLayerThickness: { value: vec4s(MAX_LAYERS) },
+      uLayerEdge: { value: vec4s(MAX_LAYERS) },
+      uLayerStrokes: { value: vec4s(MAX_LAYERS) },
+      uLayerStreaks: { value: vec4s(MAX_LAYERS) },
+      uLayerBand: { value: vec4s(MAX_LAYERS) },
+      uLayerShapes: { value: vec4s(MAX_LAYERS) },
+      uShapes: { value: vec4s(MAX_SHAPES) },
+      uFields: { value: this.fieldsTarget.texture },
+      uFade: { value: new THREE.Vector4() },
+      uLight: { value: new THREE.Vector4() },
+      uDebugView: { value: DEBUG_VIEWS.final },
+      uDebugLayer: { value: 0 },
+    };
+
     this.material = new THREE.ShaderMaterial({
       vertexShader,
-      fragmentShader,
+      fragmentShader: noise + paintingFragment,
       defines: { MAX_LAYERS, MAX_SHAPES },
+      uniforms,
+    });
+
+    // The baking pass: a full-screen quad drawn once into each slice.
+    this.fieldsMaterial = new THREE.ShaderMaterial({
+      vertexShader: fieldsVertex,
+      fragmentShader: noise + fieldsFragment,
+      defines: { MAX_LAYERS },
       uniforms: {
-        uTime: { value: 0 },
-        uAspect: { value: this.aspect },
-        uCanvas: { value: new THREE.Color() },
-        uGrain: { value: 0 },
-        uLayerCount: { value: 0 },
-        uLayerColor: { value: colors(MAX_LAYERS) },
-        uLayerPigment: { value: vec4s(MAX_LAYERS) },
-        uLayerThickness: { value: vec4s(MAX_LAYERS) },
-        uLayerEdge: { value: vec4s(MAX_LAYERS) },
-        uLayerStrokes: { value: vec4s(MAX_LAYERS) },
-        uLayerStreaks: { value: vec4s(MAX_LAYERS) },
-        uLayerBand: { value: vec4s(MAX_LAYERS) },
-        uLayerShapes: { value: vec4s(MAX_LAYERS) },
-        uShapes: { value: vec4s(MAX_SHAPES) },
-        uFade: { value: new THREE.Vector4() },
-        uLight: { value: new THREE.Vector4() },
-        uDebugView: { value: DEBUG_VIEWS.final },
-        uDebugLayer: { value: 0 },
+        uLayer: { value: 0 },
+        uAspect: uniforms.uAspect,
+        uLayerThickness: uniforms.uLayerThickness,
+        uLayerStrokes: uniforms.uLayerStrokes,
+        uLayerStreaks: uniforms.uLayerStreaks,
+        uLayerShapes: uniforms.uLayerShapes,
+        uLayerBand: uniforms.uLayerBand,
+        uLight: uniforms.uLight,
       },
     });
+    this.fieldsQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.fieldsMaterial);
+    this.fieldsQuad.frustumCulled = false;
+    this.fieldsCamera = new THREE.Camera();
+
     this.sync();
 
     const geometry = new THREE.PlaneGeometry(this.aspect, 1);
     this.mesh = new THREE.Mesh(geometry, this.material);
   }
 
+  // Render the static fields into the texture array, one slice at a time.
+  // Called from update() whenever sync() has marked them stale, so changing
+  // several settings in one frame bakes only once.
+  bakeFields() {
+    const { renderer, fieldsQuad, fieldsCamera, fieldsTarget } = this;
+    const previousTarget = renderer.getRenderTarget();
+    const uLayer = this.fieldsMaterial.uniforms.uLayer;
+
+    // Layer slices, then the exposure slice (index MAX_LAYERS).
+    const slices = [...this.layers.keys(), MAX_LAYERS];
+    for (const slice of slices) {
+      uLayer.value = slice;
+      // For array targets, the second argument selects the slice to draw into.
+      renderer.setRenderTarget(fieldsTarget, slice);
+      renderer.render(fieldsQuad, fieldsCamera);
+    }
+
+    renderer.setRenderTarget(previousTarget);
+    this.fieldsDirty = false;
+  }
+
   sync() {
     const { layers, surface } = this;
     const u = this.material.uniforms;
+
+    // Any setting may affect the baked fields; re-bake before the next frame.
+    this.fieldsDirty = true;
 
     const shapeTotal = layers.reduce((n, layer) => n + (layer.shapes?.length ?? 0), 0);
     if (layers.length > MAX_LAYERS) {
@@ -159,6 +224,8 @@ export class Painting {
   // the speed live doesn't make the painting jump. The preview multiplier
   // speeds up fading too, so fading can be previewed quickly.
   update(deltaSeconds) {
+    if (this.fieldsDirty) this.bakeFields();
+
     const seconds = deltaSeconds * this.timeScale;
     this.material.uniforms.uTime.value += seconds * this.motion.speed;
     this.fadeClock.advance(seconds);
@@ -168,5 +235,8 @@ export class Painting {
   dispose() {
     this.mesh.geometry.dispose();
     this.material.dispose();
+    this.fieldsQuad.geometry.dispose();
+    this.fieldsMaterial.dispose();
+    this.fieldsTarget.dispose();
   }
 }

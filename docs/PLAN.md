@@ -88,9 +88,8 @@ the effects must be easy to isolate and to talk about by name.
 
 - [ ] Keep the static fields (the ones that don't change over time) computed in
       separately callable shader functions, so they can move into a pre-computed
-      texture later (Phase 5). The stroke field is its own function
-      (`strokeField`); the warp offset and thickness patches are still inline
-      in `main()` and need splitting out when Phase 5 starts.
+      texture later (Phase 5). Done: all static fields now live in the
+      baking shader (`fields.frag.glsl`).
 
 ---
 
@@ -173,8 +172,8 @@ crisscrosses:
       anchored to the canvas; only how far each stroke reaches changes.
       Breathing frequency doubled so neighbouring strokes move independently.
 - [ ] **Tune** from feedback: spikiness, stroke size, crisscross density.
-- [ ] **Measure frame rate** on real hardware (debug panel → fps). If low,
-      bring Phase 5 forward.
+- [x] **Measure frame rate** on real hardware (debug panel → fps): about 44
+      fps, which led to Phase 5.
 
 ---
 
@@ -257,12 +256,24 @@ These phases add roughly 15–20 fBm evaluations per pixel per layer. Most of
 the fields never change over time: the stroke field, the orientation field,
 low-frequency thickness variation, and exposure.
 
-- [ ] Pre-compute the static fields **once** into a texture using a
-      [`WebGLRenderTarget`](https://threejs.org/docs/pages/WebGLRenderTarget.html)
-      at startup, with one channel per field. The animated shader samples it.
-- [ ] Use a fixed texture resolution (e.g. 2048 × 1434) tied to the painting,
-      not the screen, so detail stays consistent across window sizes.
-- [ ] Only do this when performance requires it. Measure first.
+- [x] Measure first: about **44 fps** on the development machine with all four
+      phases in place. Worth doing.
+- [x] Pre-compute the static fields (strokes, patches, warp, band presence,
+      exposure) into a
+      [`WebGLArrayRenderTarget`](https://threejs.org/docs/pages/WebGLArrayRenderTarget.html):
+      one slice per layer plus one for exposure, 8-bit RGBA. An array texture
+      rather than separate textures, because sampler arrays can't be indexed
+      by a loop variable in GLSL ES 3.00.
+- [x] Re-bake whenever settings change (`sync()` marks the fields stale; the
+      next frame re-bakes once).
+- [x] Fixed resolution tied to the painting: `quality.fieldResolution` = 1024
+      texels tall (≈ 42 MB total). Lower than the 2048 first planned: 1024
+      already gives 5+ texels per cycle of the finest stroke detail.
+- [x] Skip the breathing noise for layers that don't breathe (the ground).
+- [x] Verified: pixel comparison before/after shows no visible change (mean
+      difference 0.3 / 765).
+- [ ] **Re-measure fps** on the development machine. If still under 60, next
+      levers: fewer breathing octaves, or a lower pixel-ratio cap.
 
 ---
 
@@ -273,7 +284,7 @@ low-frequency thickness variation, and exposure.
 3. ~~Phase 2: brush-stroke edges, including breathing stroke borders~~ (done; tuning ongoing)
 4. ~~Phase 3: red border layer~~ (done; tuning ongoing)
 5. ~~Phase 4: animated fading~~ (done; tuning ongoing)
-6. Phase 5: pre-computed static fields, when needed
+6. ~~Phase 5: pre-computed static fields~~ (done; re-measure fps)
 
 Edges and the border band are both built from the thickness field, and fading
 works on the pigment model. That's why Phase 1 comes before them, even though

@@ -19,6 +19,16 @@ export const painting = {
   viewportFill: 0.86,
 };
 
+export const quality = {
+  // Height, in texels, of the textures the static patterns (brush strokes,
+  // thickness patches, warp, light) are computed into once, rather than
+  // every frame. Higher = finer stroke detail on very large screens, at the
+  // cost of graphics memory and a slower re-bake when settings change. At
+  // 1024 that's 7 slices of about 6 MB each (≈ 42 MB); memory grows with the
+  // square of this value.
+  fieldResolution: 1024,
+};
+
 export const surface = {
   // Bare canvas beneath all paint. Shows only where paint is very thin.
   canvas: '#c9b99a',
