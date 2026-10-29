@@ -272,8 +272,9 @@ low-frequency thickness variation, and exposure.
 - [x] Skip the breathing noise for layers that don't breathe (the ground).
 - [x] Verified: pixel comparison before/after shows no visible change (mean
       difference 0.3 / 765).
-- [ ] **Re-measure fps** on the development machine. If still under 60, next
-      levers: fewer breathing octaves, or a lower pixel-ratio cap.
+- [x] **Re-measure fps** on the development machine: **55–60 fps**, up from
+      about 44. No further work needed. If a slower machine ever struggles,
+      the next levers are fewer breathing octaves or a lower pixel-ratio cap.
 
 ---
 
@@ -284,7 +285,7 @@ low-frequency thickness variation, and exposure.
 3. ~~Phase 2: brush-stroke edges, including breathing stroke borders~~ (done; tuning ongoing)
 4. ~~Phase 3: red border layer~~ (done; tuning ongoing)
 5. ~~Phase 4: animated fading~~ (done; tuning ongoing)
-6. ~~Phase 5: pre-computed static fields~~ (done; re-measure fps)
+6. ~~Phase 5: pre-computed static fields~~ (done: 44 → 55–60 fps)
 
 Edges and the border band are both built from the thickness field, and fading
 works on the pigment model. That's why Phase 1 comes before them, even though

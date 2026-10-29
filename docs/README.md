@@ -556,7 +556,7 @@ picker or CSS. Blending, however, must happen in **linear** space to be
 physically correct. Two pieces handle this:
 
 1. **Input:** with three.js color management enabled (the default since
-   r152), `new THREE.Color('#4a1418')` converts sRGB hex to linear RGB.
+   r152), `new THREE.Color('#79505c')` converts sRGB hex to linear RGB.
    So the uniforms arrive in the shader as linear values.
 2. **Output:** `ShaderMaterial` doesn't convert its output automatically.
    The final line, `#include <colorspace_fragment>`, applies the conversion
@@ -809,7 +809,8 @@ almost all of it produced the same result every frame:
    frame.
 
 **Chosen: option 3.** It removes about 85% of the per-pixel work without
-changing the look. A pixel comparison of renders before and after showed a
+changing the look. On the development machine the frame rate rose from about
+44 fps to **55–60 fps**, effectively the display's refresh limit. A pixel comparison of renders before and after showed a
 mean difference of 0.3 on a 0–765 scale, no more than the breathing motion
 changes between two frames.
 
@@ -902,10 +903,42 @@ panel (§9) exists.
 ### Palette
 
 The maroon and black were chosen to sit close in value, as in the original.
-Rothko's black is a deep, warm, reddish black rather than neutral `#000`, so
-`black` is `#120a0b`. The "window" maroon is slightly lighter than the ground
-so the two read as separate layers. The bare canvas is a pale linen color
-(`#c9b99a`), like unprimed cotton duck.
+The "window" maroon is slightly lighter than the ground so the two read as
+separate layers. The bare canvas is a pale linen color (`#c9b99a`), like
+unprimed cotton duck.
+
+The palette is being tuned gradually from feedback, in small steps:
+
+| Layer | Original | Step 1 | Step 2 | Step 3 | Step 4 |
+| --- | --- | --- | --- | --- | --- |
+| black | `#120a0b` | `#1a181e` | `#1a181e` | `#1a181e` | `#1a181e` |
+| ground | `#4a1418` | `#4c1522` | `#795059` | `#795060` | `#79505c` |
+| maroon | `#5a1a1f` | `#5d1b2b` | `#865460` | `#865468` | `#865464` |
+| red bands | `#8a1f1d` | `#8c2236` | `#a95968` | `#a95975` | `#a9596e` |
+
+- **Step 1:** the black made a little whiter and a little blue (lighter, with
+  blue now the strongest channel, so it reads as a cool charcoal rather than a
+  warm, reddish near-black). The reds pushed toward purple-pink: hue rotated
+  about 10° toward magenta (e.g. maroon 355° → 346°), slightly lighter.
+- **Step 2:** the non-black layers washed with white: each mixed 25% of the
+  way to white (`c + 0.25 × (255 − c)` per sRGB channel), like adding white
+  paint. The maroon windows become a dusty rose-mauve. A side effect: the
+  uneven thickness and brushwork inside the windows shows much more against
+  the lighter color.
+- **Step 3:** the non-black layers pushed a little further toward a
+  purple-y red: hue rotated another 10° toward purple (e.g. maroon
+  346° → 336°), with lightness and saturation held fixed in
+  [HSL](https://en.wikipedia.org/wiki/HSL_and_HSV), so only the hue moves.
+  In practice this raises the blue channel slightly while red and green stay
+  the same.
+- **Step 4:** back a little toward red: hue rotated 5° back (half of step
+  3), e.g. maroon 336° → 341°, again with lightness and saturation fixed.
+  This sits between steps 2 and 3.
+
+All the reds moved by the same hue angle and the same white mix, so they
+stay related to each other. Because the colors are pigment body colors in the glaze model (§7.4),
+a shift also changes how thin paint tints the layers beneath it, not just
+the flat color.
 
 ### Paint values
 
@@ -937,8 +970,8 @@ so the two read as separate layers. The bare canvas is a pale linen color
 
 ### Red band values
 
-- **Color `#8a1f1d`**: warmer and brighter than the maroon, so it reads as a
-  distinct red rather than more of the same paint.
+- **Color** (`#a9596e`, see the palette table above): brighter than the
+  maroon, so it reads as a distinct red rather than more of the same paint.
 - **`hiding`** of 1.4 (outer) and 1.0 (windows) makes the bands
   semi-translucent, so they tint what's beneath rather than covering it. The
   window band is lower because, over the black, it read as a neon outline.
@@ -1032,12 +1065,11 @@ adjusting values. The panel makes that fast and gives things names to refer to.
 
 The roadmap lives in [PLAN.md](PLAN.md). Beyond that:
 
-- **Frame rate after baking is unmeasured on real hardware.** It was about 44
-  fps before Phase 5. Headless screenshots use a software renderer, so their
-  frame rate means nothing in absolute terms (it rose from 1 to 4 fps there).
-  If it's still below 60, the remaining per-frame cost is mostly the
-  breathing noise (two shaped layers × 5-octave 3D fBm), and the next levers
-  are fewer breathing octaves or a lower pixel-ratio cap (§5).
+- **Performance on slower machines:** 55–60 fps on the development machine
+  after baking (§7.10). On weaker graphics hardware, the remaining per-frame
+  cost is mostly the breathing noise (two shaped layers × 5-octave 3D fBm).
+  The next levers would be fewer breathing octaves or a lower pixel-ratio cap
+  (§5).
 - **Occasional small grid patches** remain where both stroke sets cross at
   similar strength (§7.7).
 - **No reduced-motion handling:** honoring

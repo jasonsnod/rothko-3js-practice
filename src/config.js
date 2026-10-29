@@ -82,7 +82,7 @@ export const surface = {
 export const layers = [
   {
     name: 'ground',
-    pigment: { color: '#4a1418', hiding: 4.0, glaze: 1.0 },
+    pigment: { color: '#79505c', hiding: 4.0, glaze: 1.0 },
     thickness: { base: 1.0, variation: 0.25, scale: 2.0 },
     strokes: { size: 0.2, angle: 20, spread: 40, length: 0.35, width: 0.02, interior: 0.15 },
     edge: { width: 0.02, breath: 0.0, warp: 0.0, breakup: 0.0 },
@@ -93,14 +93,14 @@ export const layers = [
     // Warm red beneath the black field's border. Shows as a halo where it
     // extends past the black, and through the black's thin, broken edge.
     name: 'red-outer',
-    pigment: { color: '#8a1f1d', hiding: 1.4, glaze: 1.0 },
+    pigment: { color: '#a9596e', hiding: 1.4, glaze: 1.0 },
     thickness: { base: 1.0, variation: 0.4, scale: 3.0 },
     strokes: { size: 0.14, angle: -10, spread: 40, length: 0.25, width: 0.016, interior: 0.3 },
     band: { outlines: 'black', width: 0.03, offset: 0.0, patchiness: 0.85, patchScale: 4.0, breakup: 0.5 },
   },
   {
     name: 'black',
-    pigment: { color: '#120a0b', hiding: 2.4, glaze: 1.0 },
+    pigment: { color: '#1a181e', hiding: 2.4, glaze: 1.0 },
     thickness: { base: 1.0, variation: 0.35, scale: 2.5 },
     strokes: { size: 0.16, angle: 35, spread: 35, length: 0.3, width: 0.018, interior: 0.25 },
     edge: { width: 0.035, breath: 0.012, warp: 0.02, breakup: 0.6 },
@@ -110,14 +110,14 @@ export const layers = [
     // Warm red over the black, around the windows' borders and beneath the
     // maroon. Shows around the windows and through the maroon's ragged edges.
     name: 'red-windows',
-    pigment: { color: '#8a1f1d', hiding: 1.0, glaze: 1.0 },
+    pigment: { color: '#a9596e', hiding: 1.0, glaze: 1.0 },
     thickness: { base: 1.0, variation: 0.4, scale: 3.5 },
     strokes: { size: 0.1, angle: 60, spread: 40, length: 0.2, width: 0.012, interior: 0.3 },
     band: { outlines: 'maroon', width: 0.02, offset: 0.005, patchiness: 0.85, patchScale: 5.0, breakup: 0.5 },
   },
   {
     name: 'maroon',
-    pigment: { color: '#5a1a1f', hiding: 2.4, glaze: 1.0 },
+    pigment: { color: '#865464', hiding: 2.4, glaze: 1.0 },
     thickness: { base: 1.0, variation: 0.35, scale: 3.0 },
     strokes: { size: 0.12, angle: -25, spread: 35, length: 0.25, width: 0.014, interior: 0.25 },
     edge: { width: 0.025, breath: 0.01, warp: 0.012, breakup: 0.6 },
